@@ -7,8 +7,8 @@
 //!       which is introduced by Kostyukov et al.
 //!
 use super::chc::*;
-use crate::common::*;
 use crate::info::VarInfo;
+use crate::{check, common::*};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Polarity {
@@ -290,8 +290,79 @@ fn test_remove_slc_tst() {
     check_no_slc_tst(&c.lhs_term);
 }
 
-pub fn work<'a>(instance: &mut AbsInstance<'a>) {
+fn remove_neg_src_tst<'a>(instance: &mut AbsInstance<'a>) {
     for c in instance.clauses.iter_mut() {
         handle_clause(c);
     }
+}
+
+/// Checks if the given instance require to apply `remove_not_bool` pass
+///
+/// If there is a use of (not X), returns true
+fn check_not_boolean_use<'a>(instance: &AbsInstance<'a>) -> bool {
+    /// Take a de morgan dual
+    fn dual(t: &Term, map: &HashMap<VarIdx, VarIdx>) -> Term {
+        unimplemented!()
+    }
+    fn inner(t: &Term, map: &HashMap<VarIdx, VarIdx>) -> Term {
+        match t.get() {
+            RTerm::Var(_, _) | RTerm::Cst(_) => t.clone(),
+            RTerm::App { op, args, .. } if *op == Op::Not => {
+                assert!(args.len() == 1);
+                let arg = &args[0];
+                unimplemented!()
+            }
+            RTerm::CArray { term, .. } => unimplemented!(),
+            RTerm::DTypSlc { term, .. } => panic!("DTypSlc should not appear"),
+            RTerm::DTypTst { term, .. } => panic!("DTypTst should not appear"),
+            RTerm::App { args, .. } => todo!(),
+            RTerm::DTypNew { args, .. } => todo!(),
+            RTerm::Fun { args, .. } => todo!(),
+        }
+    }
+    instance
+        .clauses
+        .iter()
+        .any(|x| inner(&x.lhs_term) || x.lhs_preds.iter().any(|x| x.args.iter().any(|x| inner(x))))
+}
+
+fn introduce_dual<'a>(instance: &mut AbsInstance<'a>) -> Vec<HashMap<VarIdx, VarIdx>> {
+    let mut dual_var_map = Vec::new();
+    for c in instance.clauses.iter_mut() {
+        let mut var_map = HashMap::new();
+        for v in c.vars.iter() {
+            if v.typ.is_bool() {
+                var_map.insert(v.idx, c.vars.next_index() + var_map.len());
+            }
+        }
+        for (k, v) in var_map.iter() {
+            let name = format!("dual-{}", k);
+            let info = VarInfo::new(name, typ::bool(), *v);
+            c.vars.push(info)
+        }
+        dual_var_map.push(var_map)
+    }
+    dual_var_map
+}
+
+fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>) {
+    unimplemented!()
+}
+
+fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
+    if !check_not_boolean_use(instance) {
+        return;
+    }
+    introduce_dual(instance);
+    remove_not_bool_var(instance);
+}
+
+#[test]
+fn test_remove_not_bool() {
+    unimplemented!()
+}
+
+pub fn work<'a>(instance: &mut AbsInstance<'a>) {
+    remove_neg_src_tst(instance);
+    remove_not_bool(instance);
 }
