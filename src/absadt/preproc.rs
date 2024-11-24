@@ -6,7 +6,7 @@
 //!     - better solution: introduce a new predicate that expresses the dis-equality on each data type,
 //!       which is introduced by Kostyukov et al.
 //!
-use super::chc::*;
+use super::chc::{self, *};
 use crate::info::VarInfo;
 use crate::{check, common::*};
 
@@ -300,13 +300,9 @@ fn remove_neg_src_tst<'a>(instance: &mut AbsInstance<'a>) {
 ///
 /// If there is a use of (not X), returns true
 fn check_not_boolean_use<'a>(instance: &AbsInstance<'a>) -> bool {
-    /// Take a de morgan dual
-    fn dual(t: &Term, map: &HashMap<VarIdx, VarIdx>) -> Term {
-        unimplemented!()
-    }
-    fn inner(t: &Term, map: &HashMap<VarIdx, VarIdx>) -> Term {
+    fn inner(t: &Term) -> bool {
         match t.get() {
-            RTerm::Var(_, _) | RTerm::Cst(_) => t.clone(),
+            RTerm::Var(_, _) | RTerm::Cst(_) => false,
             RTerm::App { op, args, .. } if *op == Op::Not => {
                 assert!(args.len() == 1);
                 let arg = &args[0];
@@ -345,16 +341,178 @@ fn introduce_dual<'a>(instance: &mut AbsInstance<'a>) -> Vec<HashMap<VarIdx, Var
     dual_var_map
 }
 
-fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>) {
-    unimplemented!()
+fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<VarIdx, VarIdx>>) {
+    assert_eq!(varmap.len(), instance.clauses.len());
+    // Takes a negation of a given term using mapping of dual variables
+    fn neg(t: &term::Term, env: &HashMap<VarIdx, VarIdx>) -> term::Term {
+        match t.get() {
+            RTerm::Var(typ, v) => {
+                let dual = env.get(v).unwrap();
+                term::var(*dual, typ.clone())
+            }
+            RTerm::Cst(_) => term::app(Op::Not, vec![t.clone()]),
+            RTerm::CArray { typ, term, .. } => {
+                let term = neg(term, env);
+                term::cst_array(typ.clone(), term)
+            }
+            RTerm::App { op, args, .. } => match op {
+                Op::Not => {
+                    assert!(args.len() > 0 && args[0].typ().is_bool());
+                    debug_assert!(args.len() == 1);
+                    let arg = &args[0];
+                    arg.clone()
+                }
+                Op::And => {
+                    debug_assert!(args.len() > 0 && args[0].typ().is_bool());
+                    let args = args.iter().map(|t| neg(t, env)).collect();
+                    term::app(Op::Or, args)
+                }
+                Op::Or => {
+                    debug_assert!(args.len() > 0 && args[0].typ().is_bool());
+                    let args = args.iter().map(|t| neg(t, env)).collect();
+                    term::app(Op::And, args)
+                }
+                Op::Eql => {
+                    let args: Vec<_> = args.iter().map(|t| neg(t, env)).collect();
+                    term::app(Op::Not, vec![term::app(Op::Eql, args)])
+                }
+                Op::Impl => todo!(),
+                Op::AdtEql => todo!(),
+                Op::Ite => todo!(),
+                Op::Distinct => todo!(),
+                Op::Add
+                | Op::Sub
+                | Op::Mul
+                | Op::CMul
+                | Op::IDiv
+                | Op::Div
+                | Op::Rem
+                | Op::Mod
+                | Op::Gt
+                | Op::Ge
+                | Op::Le
+                | Op::Lt
+                | Op::ToInt
+                | Op::ToReal
+                | Op::Store
+                | Op::Select => panic!("program error: unreachable expression for negation"),
+            },
+            RTerm::DTypNew { .. } => {
+                panic!("program error: type")
+            }
+            RTerm::DTypSlc { .. } | RTerm::DTypTst { .. } => {
+                panic!("Assumption: slc&testers are already removed")
+            }
+            RTerm::Fun { name, args, .. } => {
+                let args = args.iter().map(|t| neg(t, env)).collect();
+                let t = term::fun(name.clone(), args);
+                term::app(Op::Not, vec![t])
+            }
+        }
+    }
+
+    // remove (not t) where t is a boolean term
+    // for each occurrence, neg(t) is applied
+    fn go(t: &term::Term, env: &HashMap<VarIdx, VarIdx>) -> term::Term {
+        match t.get() {
+            RTerm::Var(_, _) | RTerm::Cst(_) => t.clone(),
+            RTerm::CArray { typ, term, .. } => {
+                let term = go(term, env);
+                term::cst_array(typ.clone(), term)
+            }
+            RTerm::App { op, args, .. } => {
+                let args: Vec<_> = args.iter().map(|t| go(t, env)).collect();
+                if *op == Op::Not {
+                    assert!(args.len() == 1);
+                    if args[0].typ().is_bool() {
+                        neg(&args[0], env)
+                    } else {
+                        term::app(op.clone(), args)
+                    }
+                } else {
+                    term::app(op.clone(), args)
+                }
+            }
+            RTerm::DTypNew {
+                typ, name, args, ..
+            } => {
+                let args = args.iter().map(|t| go(t, env)).collect();
+                term::dtyp_new(typ.clone(), name, args)
+            }
+            RTerm::DTypSlc {
+                typ, name, term, ..
+            } => {
+                let term = go(term, env);
+                term::dtyp_slc(typ.clone(), name, term)
+            }
+            RTerm::DTypTst { name, term, .. } => {
+                let term = go(term, env);
+                term::dtyp_tst(name, term)
+            }
+            RTerm::Fun { name, args, .. } => {
+                let args = args.iter().map(|t| go(t, env)).collect();
+                term::fun(name.clone(), args)
+            }
+        }
+    }
+
+    let clauses: Vec<_> = instance
+        .clauses
+        .iter()
+        .zip(varmap.iter())
+        .map(|(c, env)| {
+            let lhs_term = go(&c.lhs_term, env);
+            let lhs_preds = c
+                .lhs_preds
+                .iter()
+                .map(|lhs_pred| {
+                    let mut args = Vec::new();
+                    for term in lhs_pred.args.iter() {
+                        // all the term of bool is passed with its dual
+                        if term.typ().is_bool() {
+                            unimplemented!()
+                        } else {
+                            args.push(go(term, env))
+                        }
+                    }
+                    let args: VarMap<_> = args.into();
+                    chc::PredApp {
+                        pred: lhs_pred.pred,
+                        args: args.into(),
+                    }
+                })
+                .collect();
+            let rhs = c.rhs.map(|(p, old_args)| {
+                let mut args = Vec::new();
+                for arg in old_args.iter() {
+                    args.push(*arg);
+                    match env.get(arg) {
+                        Some(dual) => {
+                            args.push(*dual);
+                        }
+                        None => {}
+                    }
+                }
+
+                (p, args)
+            });
+            AbsClause {
+                lhs_preds,
+                lhs_term,
+                rhs,
+                vars: c.vars.clone(),
+            }
+        })
+        .collect();
+    instance.clauses = clauses;
 }
 
 fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
     if !check_not_boolean_use(instance) {
         return;
     }
-    introduce_dual(instance);
-    remove_not_bool_var(instance);
+    let varmap = introduce_dual(instance);
+    remove_not_bool_var(instance, &varmap);
 }
 
 #[test]
