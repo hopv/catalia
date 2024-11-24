@@ -296,30 +296,76 @@ fn remove_neg_src_tst<'a>(instance: &mut AbsInstance<'a>) {
     }
 }
 
+fn check_not_boolean_use_inner(t: &Term) -> bool {
+    match t.get() {
+        RTerm::Var(_, _) | RTerm::Cst(_) => false,
+        RTerm::App { op, .. } if *op == Op::Not => true,
+        RTerm::App { args, .. } => args.iter().any(|x| check_not_boolean_use_inner(x)),
+        RTerm::CArray { term, .. } => check_not_boolean_use_inner(term),
+        RTerm::DTypSlc { .. } => panic!("DTypSlc should not appear"),
+        RTerm::DTypTst { .. } => panic!("DTypTst should not appear"),
+        RTerm::DTypNew { args, .. } => args.iter().any(|x| check_not_boolean_use_inner(x)),
+        RTerm::Fun { args, .. } => args.iter().any(|x| check_not_boolean_use_inner(x)),
+    }
+}
 /// Checks if the given instance require to apply `remove_not_bool` pass
 ///
 /// If there is a use of (not X), returns true
 fn check_not_boolean_use<'a>(instance: &AbsInstance<'a>) -> bool {
-    fn inner(t: &Term) -> bool {
-        match t.get() {
-            RTerm::Var(_, _) | RTerm::Cst(_) => false,
-            RTerm::App { op, args, .. } if *op == Op::Not => {
-                assert!(args.len() == 1);
-                let arg = &args[0];
-                unimplemented!()
-            }
-            RTerm::CArray { term, .. } => unimplemented!(),
-            RTerm::DTypSlc { term, .. } => panic!("DTypSlc should not appear"),
-            RTerm::DTypTst { term, .. } => panic!("DTypTst should not appear"),
-            RTerm::App { args, .. } => todo!(),
-            RTerm::DTypNew { args, .. } => todo!(),
-            RTerm::Fun { args, .. } => todo!(),
-        }
-    }
-    instance
-        .clauses
-        .iter()
-        .any(|x| inner(&x.lhs_term) || x.lhs_preds.iter().any(|x| x.args.iter().any(|x| inner(x))))
+    instance.clauses.iter().any(|x| {
+        check_not_boolean_use_inner(&x.lhs_term)
+            || x.lhs_preds
+                .iter()
+                .any(|x| x.args.iter().any(|x| check_not_boolean_use_inner(x)))
+    })
+}
+
+#[cfg(test)]
+fn gen_term_for_test() -> (term::Term, term::Term) {
+    /*
+    (and (= (insert 1 D) nil)
+     (not G)
+     (= v_7 false))
+     */
+    // List<T> = nil | insert (head T) (tail List<T>)
+    dtyp::create_list_dtyp();
+
+    // ilist
+    let ilist = typ::dtyp(dtyp::get("List").unwrap(), vec![typ::int()].into());
+
+    let mut vars = VarInfos::new();
+    let c = VarInfo::new("C", ilist.clone(), vars.next_index());
+    let c_idx = c.idx;
+    vars.push(c);
+    let g = VarInfo::new("G", typ::bool(), vars.next_index());
+    let g_idx = g.idx;
+    vars.push(g);
+    let v7 = VarInfo::new("v_7", typ::bool(), vars.next_index());
+    let v7_idx = v7.idx;
+    vars.push(v7);
+
+    // (= (insert C) nil)
+    let arg1 = term::dtyp_new(ilist.clone(), "nil", vec![]);
+    let arg2 = term::dtyp_new(
+        ilist.clone(),
+        "insert",
+        vec![term::int(1), term::var(c_idx, ilist.clone())],
+    );
+    let t1 = term::eq(arg2, arg1);
+    // (not G)
+    let t2 = term::app(Op::Not, vec![term::var(g_idx, typ::bool())]);
+    // (= v_7 false)
+    let t3 = term::eq(term::var(v7_idx, typ::bool()), term::bool(false));
+    let lhs_term = term::and(vec![t1.clone(), t2, t3]);
+    (lhs_term, t1)
+}
+
+#[test]
+fn test_check_not_boolean_use() {
+    let (pos, neg) = gen_term_for_test();
+
+    assert!(check_not_boolean_use_inner(&pos));
+    assert!(!check_not_boolean_use_inner(&neg));
 }
 
 fn introduce_dual<'a>(instance: &mut AbsInstance<'a>) -> Vec<HashMap<VarIdx, VarIdx>> {
@@ -482,7 +528,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                     }
                 })
                 .collect();
-            let rhs = c.rhs.map(|(p, old_args)| {
+            let rhs = c.rhs.as_ref().map(|(p, old_args)| {
                 let mut args = Vec::new();
                 for arg in old_args.iter() {
                     args.push(*arg);
@@ -494,7 +540,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                     }
                 }
 
-                (p, args)
+                (*p, args)
             });
             AbsClause {
                 lhs_preds,
@@ -509,6 +555,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
 
 fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
     if !check_not_boolean_use(instance) {
+        println!("not used");
         return;
     }
     let varmap = introduce_dual(instance);
