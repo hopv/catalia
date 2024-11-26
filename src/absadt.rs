@@ -109,6 +109,8 @@ fn initialize_encs_for_term(t: &Term, encs: &mut BTreeMap<Typ, Encoder>) -> Res<
 impl<'original> AbsConf<'original> {
     fn new(original: &'original Instance, profiler: &'original Profiler) -> Res<Self> {
         let mut instance = AbsInstance::new(original)?;
+        let mut file = instance.instance_log_files("target")?;
+        instance.dump_as_smt2(&mut file, "", false)?;
         preproc::work(&mut instance);
         let cexs = Vec::new();
         let solver = conf.solver.spawn("absadt", Parser, original)?;

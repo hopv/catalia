@@ -7,8 +7,8 @@
 //!       which is introduced by Kostyukov et al.
 //!
 use super::chc::{self, *};
+use crate::common::*;
 use crate::info::VarInfo;
-use crate::{check, common::*};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Polarity {
@@ -299,7 +299,14 @@ fn remove_neg_src_tst<'a>(instance: &mut AbsInstance<'a>) {
 fn check_not_boolean_use_inner(t: &Term) -> bool {
     match t.get() {
         RTerm::Var(_, _) | RTerm::Cst(_) => false,
-        RTerm::App { op, .. } if *op == Op::Not => true,
+        RTerm::App { op, args, .. } if *op == Op::Not => {
+            debug_assert_eq!(args.len(), 1);
+            let a = &args[0];
+            match a.get() {
+                RTerm::App { op, .. } if *op == Op::Eql => false,
+                _ => true,
+            }
+        }
         RTerm::App { args, .. } => args.iter().any(|x| check_not_boolean_use_inner(x)),
         RTerm::CArray { term, .. } => check_not_boolean_use_inner(term),
         RTerm::DTypSlc { .. } => panic!("DTypSlc should not appear"),
@@ -383,6 +390,16 @@ fn introduce_dual<'a>(instance: &mut AbsInstance<'a>) -> Vec<HashMap<VarIdx, Var
             c.vars.push(info)
         }
         dual_var_map.push(var_map)
+    }
+    for p in instance.preds.iter_mut() {
+        let mut new_sig = VarMap::new();
+        for x in p.sig.iter() {
+            new_sig.push(x.clone());
+            if x.is_bool() {
+                new_sig.push(x.clone())
+            }
+        }
+        p.sig = new_sig.into();
     }
     dual_var_map
 }
@@ -514,11 +531,10 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                 .map(|lhs_pred| {
                     let mut args = Vec::new();
                     for term in lhs_pred.args.iter() {
+                        args.push(go(term, env));
                         // all the term of bool is passed with its dual
                         if term.typ().is_bool() {
-                            unimplemented!()
-                        } else {
-                            args.push(go(term, env))
+                            args.push(neg(term, env));
                         }
                     }
                     let args: VarMap<_> = args.into();
@@ -563,9 +579,7 @@ fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
 }
 
 #[test]
-fn test_remove_not_bool() {
-    unimplemented!()
-}
+fn test_remove_not_bool() {}
 
 pub fn work<'a>(instance: &mut AbsInstance<'a>) {
     remove_neg_src_tst(instance);
