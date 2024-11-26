@@ -571,7 +571,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
 
 fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
     if !check_not_boolean_use(instance) {
-        println!("not used");
+        log_info!("(not X) does not appear in the instance");
         return;
     }
     let varmap = introduce_dual(instance);
