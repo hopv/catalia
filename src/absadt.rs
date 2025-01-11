@@ -157,11 +157,6 @@ impl<'original> AbsConf<'original> {
         Ok(())
     }
 
-    fn refine_encs(&mut self) -> Res<()> {
-        // TODO: discard unnecessary encoders
-        Ok(())
-    }
-
     fn get_combined_cex(&self) -> chc::CEX {
         let mut varmap = VarMap::new();
         let mut form = Vec::new();
@@ -184,6 +179,40 @@ impl<'original> AbsConf<'original> {
         }
     }
 
+    /// Handles a counterexample
+    ///
+    /// `handle_cex` takes a cex and
+    /// 1. checks if it is feasible.
+    /// 2. if yes, returns true
+    /// 3. if no, updates the encoders and returns false
+    fn handle_cex(&mut self, cex: chc::CEX) -> Res<bool> {
+        log_debug!("cex: {}", cex);
+        if let Some(b) = cex.check_sat_opt(&mut self.solver)? {
+            // unsat
+            if b {
+                return Ok(true);
+            }
+        }
+        self.cexs.push(cex);
+        let cex = self.get_combined_cex();
+
+        log_debug!("combined_cex: {}", cex);
+        learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
+        log_info!("encs are updated");
+        for (tag, enc) in self.encs.iter() {
+            log_debug!("{}: {}", tag, enc);
+        }
+        Ok(false)
+    }
+
+    /// Bounded model checking for the given instance
+    ///
+    /// returns true if the instance is unsatisfiable
+    fn bmc(&mut self) -> Res<bool> {
+        unimplemented!()
+    }
+
+    /// Main CEGAR loop of Catalia
     fn run(&mut self) -> Res<either::Either<(), ()>> {
         //self.playground()?;
         self.initialize_encs()?;
@@ -203,23 +232,9 @@ impl<'original> AbsConf<'original> {
                 }
                 either::Right(x) => {
                     let cex = self.instance.get_cex(&x);
-                    log_debug!("cex: {}", cex);
-                    if let Some(b) = cex.check_sat_opt(&mut self.solver)? {
-                        // unsat
-                        if b {
-                            break either::Right(());
-                        }
+                    if self.handle_cex(cex)? {
+                        break either::Right(());
                     }
-                    self.cexs.push(cex);
-                    let cex = self.get_combined_cex();
-
-                    log_debug!("combined_cex: {}", cex);
-                    learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
-                    log_info!("encs are updated");
-                    for (tag, enc) in self.encs.iter() {
-                        log_debug!("{}: {}", tag, enc);
-                    }
-                    self.refine_encs()?;
                 }
             }
         };

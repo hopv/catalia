@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 const CHECK_SAT_TIMEOUT: usize = 10;
 
+#[derive(Clone, Debug)]
 pub struct PredApp {
     pub pred: PrdIdx,
     pub args: VarTerms,
@@ -823,6 +824,59 @@ impl CEX {
     }
 }
 
+/// generate new variables in `vars` and rename variables in `clause`
+fn rename_vars(
+    clause: &AbsClause,
+    vars: &mut VarInfos,
+) -> (Term, Vec<PredApp>, Option<(PrdIdx, Vec<VarIdx>)>) {
+    let mut args_remap = HashMap::new();
+
+    // Introduce fresh variables and rename variables
+    let mut rename_map = VarHMap::new();
+    for var in clause.vars.iter() {
+        let new_idx = vars.next_index();
+        let mut new_info = var.clone();
+        let old_idx = var.idx;
+        new_info.idx = new_idx;
+        vars.push(new_info);
+
+        // a bit redundant
+        args_remap.insert(old_idx, new_idx);
+        rename_map.insert(old_idx, term::var(new_idx, var.typ.clone()));
+    }
+
+    // rename lhs_term
+    let new_lhs_term = clause.lhs_term.subst_total(&rename_map).unwrap().0;
+
+    // rename lhs_preds
+    let new_lhs_preds = clause
+        .lhs_preds
+        .iter()
+        .map(|app| {
+            let args: VarMap<_> = app
+                .args
+                .iter()
+                .map(|arg| arg.subst_total(&rename_map).unwrap().0)
+                .collect();
+            PredApp {
+                pred: app.pred,
+                args: args.into(),
+            }
+        })
+        .collect();
+
+    // rename rhs
+    let new_rhs = clause.rhs.as_ref().map(|(pred, args)| {
+        let new_args: Vec<_> = args
+            .iter()
+            .map(|arg| args_remap.get(arg).unwrap().clone())
+            .collect();
+        (*pred, new_args)
+    });
+
+    (new_lhs_term, new_lhs_preds, new_rhs)
+}
+
 impl<'a> AbsInstance<'a> {
     /// Obtain a finite expansion of the original CHC instance along with the resolution proof (call-tree).
     pub fn get_cex(&self, tree: &CallTree) -> CEX {
@@ -830,57 +884,33 @@ impl<'a> AbsInstance<'a> {
             instance: &AbsInstance,
             tree: &CallTree,
             cur: &Node,
-            cur_args: VarMap<term::Term>,
+            cur_args: &VarMap<term::Term>,
             vars: &mut VarInfos,
         ) -> term::Term {
-            let clause = &instance.clauses[cur.clsidx];
-            let mut args_remap = HashMap::new();
-
-            // Introduce fresh variables and rename variables
-            let mut rename_map = VarHMap::new();
-            for var in clause.vars.iter() {
-                let new_idx = vars.next_index();
-                let mut new_info = var.clone();
-                let old_idx = var.idx;
-                new_info.idx = new_idx;
-                vars.push(new_info);
-
-                // a bit redundant
-                args_remap.insert(old_idx, new_idx);
-                rename_map.insert(old_idx, term::var(new_idx, var.typ.clone()));
-            }
-
-            let new_lhs_term = clause.lhs_term.subst_total(&rename_map).unwrap().0;
+            let clause: &AbsClause = &instance.clauses[cur.clsidx];
+            let (new_lhs_term, new_lhs_preds, new_rhs) = rename_vars(clause, vars);
             let mut terms = vec![new_lhs_term];
 
+            // traverse lhs_preds and children
             for child_idx in cur.children.iter() {
                 let next_node = tree.nodes.get(child_idx).unwrap();
 
                 let original_arg_pos = next_node.args[0].as_i64().unwrap() as usize;
                 // This predicate application is just for the constraint of the reachable
                 // values for each approximation
-                if clause.lhs_preds.len() <= original_arg_pos {
+                if new_lhs_preds.len() <= original_arg_pos {
                     continue;
                 }
-                let app = &clause.lhs_preds[original_arg_pos];
-
-                let args = app
-                    .args
-                    .iter()
-                    .map(|arg| arg.subst_total(&rename_map).unwrap().0)
-                    .collect();
-
-                let res = walk(instance, tree, next_node, args, vars);
-
+                let app = &new_lhs_preds[original_arg_pos];
+                let res = walk(instance, tree, next_node, &app.args, vars);
                 terms.push(res);
             }
-            assert_eq!(clause.lhs_preds.len() + 1, terms.len());
+            assert_eq!(new_lhs_preds.len() + 1, terms.len());
             let res = term::and(terms);
 
-            match clause.rhs.as_ref() {
+            // Finally, assign arguments `cur_args` to variables, if `clause` is a definite clause.
+            match new_rhs.as_ref() {
                 Some(pred) => {
-                    let args = &pred.1;
-
                     // sanity check
                     #[cfg(debug_assertions)]
                     {
@@ -890,12 +920,10 @@ impl<'a> AbsInstance<'a> {
                         assert_eq!(node_pred.sig.len(), cur_args.len());
                     }
 
+                    let args = &pred.1;
                     assert_eq!(cur_args.len(), args.len());
-                    let subst_map: VarHMap<_> = args
-                        .iter()
-                        .map(|x| args_remap.get(x).unwrap().clone())
-                        .zip(cur_args.iter().cloned())
-                        .collect();
+                    let subst_map: VarHMap<_> =
+                        args.iter().cloned().zip(cur_args.iter().cloned()).collect();
 
                     res.subst(&subst_map).0
                 }
@@ -907,10 +935,29 @@ impl<'a> AbsInstance<'a> {
         let mut cexs = Vec::new();
         for root in tree.roots.iter() {
             let node = tree.nodes.get(root).unwrap();
-            let term = walk(self, &tree, &node, VarMap::new(), &mut vars);
+            let term = walk(self, &tree, &node, &VarMap::new(), &mut vars);
             cexs.push(term);
         }
-        let term = term::or(cexs);
+        let term: hashconsing::HConsed<RTerm> = term::or(cexs);
+        CEX { vars, term }
+    }
+
+    /// Obtain a finite expansion of the CHC instance.
+    ///
+    /// Each clause is expanded up to `n` times
+    pub fn get_n_expansion(&self, n: usize) -> CEX {
+        let mut vars = VarMap::new();
+        let mut cexs = Vec::new();
+
+        for c in self.clauses.iter().filter(|x| x.rhs.is_none()) {
+            // 1. rename?
+            let mut form = c.lhs_term.clone();
+            let mut preds = c.lhs_preds.clone();
+
+            for _ in 0..n {}
+        }
+
+        let term: hashconsing::HConsed<RTerm> = term::or(cexs);
         CEX { vars, term }
     }
 
