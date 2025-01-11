@@ -10,6 +10,7 @@
 //!    from a resolution proof, since the order of the execution is important
 //!
 //! These functionalitiy should be merged in the future with the original HoIce's instance
+use crate::common::consts::keywords::cmd::assert;
 use crate::common::*;
 use crate::info::VarInfo;
 use crate::term::Term;
@@ -19,6 +20,7 @@ use super::hyper_res;
 use crate::common::smt::FullParser as Parser;
 use hyper_res::ResolutionProof;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 const CHECK_SAT_TIMEOUT: usize = 10;
@@ -946,15 +948,59 @@ impl<'a> AbsInstance<'a> {
     ///
     /// Each clause is expanded up to `n` times
     pub fn get_n_expansion(&self, n: usize) -> CEX {
+        fn walk(
+            instance: &AbsInstance,
+            cur_app: &PredApp,
+            vars: &mut VarInfos,
+            n: usize,
+        ) -> term::Term {
+            if n == 0 {
+                return term::bool(false);
+            }
+            let mut terms = Vec::new();
+
+            // 1. search for the clause with the head `cur_app`.0
+            for c in instance.clauses.iter().filter(|x| x.rhs.is_some()) {
+                if c.rhs.as_ref().unwrap().0 != cur_app.pred {
+                    continue;
+                }
+                let (new_lhs_term, new_lhs_preds, new_rhs) = rename_vars(c, vars);
+                assert!(new_rhs.is_some());
+                let new_rhs = new_rhs.unwrap();
+
+                let mut lhs_terms = vec![new_lhs_term];
+                for p in new_lhs_preds.iter() {
+                    let res = walk(instance, p, vars, n - 1);
+                    lhs_terms.push(res);
+                }
+                let lhs_term = term::and(lhs_terms);
+
+                let map: VarHMap<_> = new_rhs
+                    .1
+                    .iter()
+                    .cloned()
+                    .zip(cur_app.args.iter().cloned())
+                    .collect();
+                let lhs_term = lhs_term.subst(&map).0;
+                terms.push(lhs_term);
+            }
+
+            term::or(terms)
+        }
         let mut vars = VarMap::new();
         let mut cexs = Vec::new();
 
         for c in self.clauses.iter().filter(|x| x.rhs.is_none()) {
             // 1. rename?
-            let mut form = c.lhs_term.clone();
-            let mut preds = c.lhs_preds.clone();
+            let (new_lhs_term, preds, new_rhs) = rename_vars(c, &mut vars);
+            assert!(new_rhs.is_none());
 
-            for _ in 0..n {}
+            let mut terms = vec![new_lhs_term];
+            for p in preds.iter() {
+                let res = walk(self, p, &mut vars, n);
+                terms.push(res);
+            }
+            cexs.push(term::and(terms));
         }
 
         let term: hashconsing::HConsed<RTerm> = term::or(cexs);
@@ -983,13 +1029,12 @@ impl<'a> AbsInstance<'a> {
     }
 }
 
-#[test]
-fn test_check_sat() {
+#[cfg(test)]
+fn gen_instance(sat: bool) -> Instance {
     // generate a new instance
     // P(0)
     // P(x + 1) => P(x)
     // P(x) => x <= 0
-
     let mut instance = Instance::new();
 
     let mut vars = VarInfos::new();
@@ -1031,7 +1076,11 @@ fn test_check_sat() {
     instance
         .push_new_clause(
             vars.clone(),
-            vec![t3, t1.into()],
+            if sat {
+                vec![t1.into()]
+            } else {
+                vec![t3, t1.into()]
+            },
             Some((p, a3.clone().into())),
             "P(x+1) => P(x)",
         )
@@ -1045,32 +1094,29 @@ fn test_check_sat() {
         args: a2.into(),
     };
 
-    let mut a3 = VarMap::new();
-    a3.push(xt.clone());
-    let c = instance
-        .push_new_clause(
-            vars.clone(),
-            vec![t1.into(), t2.into()],
-            Some((p, a3.clone().into())),
-            "P(x+2) => P(x)",
-        )
-        .unwrap()
-        .unwrap();
-    let preds = instance[c].lhs_preds();
-    for (_, argss) in preds.iter() {
-        println!("argss: {:?}", argss);
-        for args in argss.iter() {
-            println!("args: {:?}", args);
-            for arg in args.iter() {
-                println!("{:?}", arg);
-            }
-        }
+    if !sat {
+        let mut a3 = VarMap::new();
+        a3.push(xt.clone());
+        instance
+            .push_new_clause(
+                vars.clone(),
+                vec![t1.into(), t2.into()],
+                Some((p, a3.clone().into())),
+                "P(x+2) => P(x)",
+            )
+            .unwrap()
+            .unwrap();
     }
 
     // P(x) => x <= -2
     let mut a2 = VarMap::new();
     a2.push(xt.clone());
-    let t3 = term::TTerm::T(term::lt(xt.clone(), minus2.clone()));
+    let tmp = if sat {
+        term::gt(xt.clone(), zerot.clone())
+    } else {
+        term::lt(xt.clone(), minus2.clone())
+    };
+    let t3 = term::TTerm::T(tmp);
     let t4 = term::TTerm::P {
         pred: p,
         args: a3.into(),
@@ -1078,10 +1124,31 @@ fn test_check_sat() {
     instance
         .push_new_clause(vars.clone(), vec![t3, t4], None, "P(x) => x <= 0")
         .unwrap();
+    instance
+}
+
+#[test]
+fn test_check_sat() {
+    let instance = gen_instance(false);
 
     let my_instance = AbsInstance::new(&instance).unwrap();
     let mut file: std::fs::File = my_instance.instance_log_files("hoge").unwrap();
     my_instance.dump_as_smt2(&mut file, "no_def", true).unwrap();
 
     my_instance.check_sat().unwrap();
+}
+
+#[test]
+fn test_expansion() {
+    let instance = gen_instance(true);
+    let my_instance = AbsInstance::new(&instance).unwrap();
+
+    let mut file: std::fs::File = my_instance.instance_log_files("hoge").unwrap();
+    my_instance
+        .dump_as_smt2(&mut file, "no_def", false)
+        .unwrap();
+
+    let cex = my_instance.get_n_expansion(3);
+    println!("{}", cex);
+    unimplemented!()
 }
