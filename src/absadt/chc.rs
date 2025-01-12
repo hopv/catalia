@@ -10,7 +10,6 @@
 //!    from a resolution proof, since the order of the execution is important
 //!
 //! These functionalitiy should be merged in the future with the original HoIce's instance
-use crate::common::consts::keywords::cmd::assert;
 use crate::common::*;
 use crate::info::VarInfo;
 use crate::term::Term;
@@ -20,7 +19,6 @@ use super::hyper_res;
 use crate::common::smt::FullParser as Parser;
 use hyper_res::ResolutionProof;
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
 
 const CHECK_SAT_TIMEOUT: usize = 10;

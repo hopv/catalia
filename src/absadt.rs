@@ -52,6 +52,8 @@ mod hyper_res;
 mod learn;
 mod preproc;
 
+const BMC_DEPTH: usize = 10;
+
 pub struct AbsConf<'original> {
     pub cexs: Vec<chc::CEX>,
     pub instance: AbsInstance<'original>,
@@ -185,12 +187,16 @@ impl<'original> AbsConf<'original> {
     /// 1. checks if it is feasible.
     /// 2. if yes, returns true
     /// 3. if no, updates the encoders and returns false
-    fn handle_cex(&mut self, cex: chc::CEX) -> Res<bool> {
+    fn handle_cex(&mut self, cex: chc::CEX, return_timeout: bool) -> Res<bool> {
         log_debug!("cex: {}", cex);
         if let Some(b) = cex.check_sat_opt(&mut self.solver)? {
             // unsat
             if b {
                 return Ok(true);
+            }
+        } else {
+            if return_timeout {
+                bail!("timeout");
             }
         }
         self.cexs.push(cex);
@@ -209,7 +215,15 @@ impl<'original> AbsConf<'original> {
     ///
     /// returns true if the instance is unsatisfiable
     fn bmc(&mut self) -> Res<bool> {
-        unimplemented!()
+        for n in (0..BMC_DEPTH).rev() {
+            log_info!("trying bmc with: {}", n);
+            let cex = self.instance.get_n_expansion(n);
+            match self.handle_cex(cex, true) {
+                Ok(x) => return Ok(x),
+                Err(_) => (),
+            }
+        }
+        Ok(false)
     }
 
     /// Main CEGAR loop of Catalia
@@ -218,6 +232,12 @@ impl<'original> AbsConf<'original> {
         self.initialize_encs()?;
         let mut file = self.instance.instance_log_files("preprocessed")?;
         self.instance.dump_as_smt2(&mut file, "", false)?;
+
+        // Bounded model checking
+        if self.bmc()? {
+            return Ok(either::Right(()));
+        }
+
         let r = loop {
             self.epoch += 1;
             log_info!("epoch: {}", self.epoch);
@@ -232,7 +252,7 @@ impl<'original> AbsConf<'original> {
                 }
                 either::Right(x) => {
                     let cex = self.instance.get_cex(&x);
-                    if self.handle_cex(cex)? {
+                    if self.handle_cex(cex, false)? {
                         break either::Right(());
                     }
                 }
