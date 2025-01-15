@@ -435,10 +435,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                     let args = args.iter().map(|t| neg(t, env)).collect();
                     term::app(Op::And, args)
                 }
-                Op::Eql => {
-                    let args: Vec<_> = args.iter().map(|t| neg(t, env)).collect();
-                    term::app(Op::Not, vec![term::app(Op::Eql, args)])
-                }
+                Op::Eql => term::app(Op::Not, vec![term::app(Op::Eql, args.clone())]),
                 Op::Impl => todo!(),
                 Op::AdtEql => todo!(),
                 Op::Ite => todo!(),
@@ -458,7 +455,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                 | Op::ToInt
                 | Op::ToReal
                 | Op::Store
-                | Op::Select => panic!("program error: unreachable expression for negation"),
+                | Op::Select => panic!("program error: unreachable expression for negation: {}", t),
             },
             RTerm::DTypNew { .. } => {
                 panic!("program error: type")
