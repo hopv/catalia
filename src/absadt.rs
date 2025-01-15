@@ -52,7 +52,9 @@ mod hyper_res;
 mod learn;
 mod preproc;
 
-const BMC_DEPTH: usize = 10;
+/// Number of expansion depth for synthesizing the initial catamorphism
+const INIT_EXPANSION_DEPTH: usize = 2;
+const BMC_DEPTH: usize = 2;
 
 pub struct AbsConf<'original> {
     pub cexs: Vec<chc::CEX>,
@@ -211,16 +213,32 @@ impl<'original> AbsConf<'original> {
         Ok(false)
     }
 
-    /// Bounded model checking for the given instance
+    /// Synthesize the initial catamorphism
     ///
     /// returns true if the instance is unsatisfiable
-    fn bmc(&mut self) -> Res<bool> {
-        for n in (0..BMC_DEPTH).rev() {
-            log_info!("trying bmc with: {}", n);
+    fn synthesize_initial_encs(&mut self) -> Res<bool> {
+        for n in (0..INIT_EXPANSION_DEPTH).rev() {
+            log_info!("initializing encs: {}", n);
             let cex = self.instance.get_n_expansion(n);
             match self.handle_cex(cex, true) {
                 Ok(x) => return Ok(x),
                 Err(_) => (),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Bounded model checking
+    ///
+    /// returns true if the instance is unsatisfiable
+    fn bmc(&mut self) -> Res<bool> {
+        for n in (1..BMC_DEPTH + 1).rev() {
+            log_info!("trying bmc with: {}", n);
+            let cex = self.instance.get_n_expansion(n);
+            match cex.check_sat_opt(&mut self.solver)? {
+                Some(x) => return Ok(x),
+                // timeout
+                None => continue,
             }
         }
         Ok(false)
@@ -233,8 +251,12 @@ impl<'original> AbsConf<'original> {
         let mut file = self.instance.instance_log_files("preprocessed")?;
         self.instance.dump_as_smt2(&mut file, "", false)?;
 
-        // Bounded model checking
         if self.bmc()? {
+            return Ok(either::Right(()));
+        }
+
+        // Bounded model checking
+        if self.synthesize_initial_encs()? {
             return Ok(either::Right(()));
         }
 
