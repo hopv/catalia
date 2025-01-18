@@ -601,6 +601,22 @@ make_conf! {
         } {
             |val| bool_of_match(val)
         }
+
+        inline_tuple_adt, inline_tuple_adt: bool {
+            help "(De)activates Tuple ADT inlining.",
+            long_help "\
+                If active, hoice will inline Tuples definitions if possible.
+            ",
+            long "--inline_tuple_adt",
+            takes_val,
+            val_name bool_format,
+            val_nb 1,
+            validator bool_validator,
+            default "on",
+            hide,
+        } {
+            |val| bool_of_match(val)
+        }
     }
 
     impl SubConf for PreprocConf {

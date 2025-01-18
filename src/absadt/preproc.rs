@@ -578,6 +578,11 @@ fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
 #[test]
 fn test_remove_not_bool() {}
 
+fn inline_adts<'a>(instance: &mut AbsInstance<'a>) {
+    for (name, dt) in dtyp::get_all().iter() {}
+    unimplemented!()
+}
+
 pub fn work<'a>(instance: &mut AbsInstance<'a>) {
     remove_neg_src_tst(instance);
     remove_not_bool(instance);

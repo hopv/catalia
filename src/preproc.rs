@@ -20,6 +20,7 @@ pub mod arg_red;
 pub mod bias_unroll;
 pub mod cfg_red;
 pub mod fun_preds;
+pub mod inline_tuple;
 pub mod one_lhs;
 pub mod one_rhs;
 pub mod strict_neg_clauses;
@@ -27,7 +28,8 @@ pub mod unroll;
 
 pub use self::{
     arg_red::ArgRed, bias_unroll::BiasedUnroll, cfg_red::CfgRed, fun_preds::FunPreds,
-    one_lhs::OneLhs, one_rhs::OneRhs, strict_neg_clauses::StrictNeg, unroll::RUnroll,
+    inline_tuple::InlineADT, one_lhs::OneLhs, one_rhs::OneRhs, strict_neg_clauses::StrictNeg,
+    unroll::RUnroll,
 };
 pub use crate::instance::PreInstance;
 
@@ -283,6 +285,8 @@ pub struct Reductor<'a> {
     /// Optional predicate-to-function reduction.
     #[allow(dead_code)]
     fun_preds: Option<FunPreds>,
+    /// Optional inline ADT.
+    inline_adt: Option<InlineADT>,
 }
 impl<'a> Reductor<'a> {
     /// Constructor.
@@ -332,6 +336,7 @@ impl<'a> Reductor<'a> {
         let strict_neg = some_new! {
           StrictNeg if active and strict_neg
         };
+        let inline_adt = some_new! { InlineADT if active and inline_tuple_adt };
         let fun_preds = if !dtyp::one_or_more()? {
             None
         } else {
@@ -349,6 +354,7 @@ impl<'a> Reductor<'a> {
             runroll,
             strict_neg,
             fun_preds,
+            inline_adt,
         })
     }
 
@@ -395,6 +401,8 @@ impl<'a> Reductor<'a> {
         }
 
         utils::register_stats(&self.instance, _profiler, count)?;
+
+        run! { inline_adt };
 
         if simplify_first {
             run! { simplify };
