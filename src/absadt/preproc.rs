@@ -578,12 +578,180 @@ fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
 #[test]
 fn test_remove_not_bool() {}
 
+struct InlineTuple<'a, 'b> {
+    instance: &'a mut AbsInstance<'b>,
+    typ2tuple: HashMap<DTyp, Vec<Typ>>,
+}
+
+/// Check if the given type is a tuple.
+///
+/// Currently, very conservative. A tuple is composed of multiple items of base types.
+fn tuple_opt(typ: &DTyp) -> Option<Vec<Typ>> {
+    let mut itr = typ.news.iter();
+    let types = if let Some((_, t)) = itr.next() {
+        if itr.next().is_some() {
+            return None;
+        }
+        t
+    } else {
+        return None;
+    };
+    let mut vec = Vec::with_capacity(types.len());
+    for (_, t) in types.iter() {
+        match t {
+            dtyp::PartialTyp::Typ(t) if t.is_bool() || t.is_arith() => vec.push(t.clone()),
+            _ => return None,
+        }
+    }
+    Some(vec)
+}
+
+impl<'a, 'b> InlineTuple<'a, 'b> {
+    fn new(instance: &'a mut AbsInstance<'b>) -> Self {
+        let mut typ2tup = HashMap::new(); // O(n) is OK
+        let mut n_types = 0; // count number of types for generating unique names later
+        for (name, typ) in dtyp::get_all().iter() {
+            n_types += 1;
+            match tuple_opt(typ) {
+                Some(types) => {
+                    println!("name: {}", name);
+                    println!("typ: {}", typ);
+                    println!("types: {:?}", types);
+                    typ2tup.insert(typ.clone(), types);
+                }
+                None => {}
+            }
+        }
+        Self {
+            instance,
+            typ2tuple: typ2tup,
+        }
+    }
+    fn get_tuple(&self, typ: &Typ) -> Option<&Vec<Typ>> {
+        match typ.get() {
+            typ::RTyp::DTyp { dtyp, prms } => match self.typ2tuple.get(dtyp) {
+                Some(ts) => Some(ts),
+                None => None,
+            },
+            _ => None,
+        }
+    }
+    fn tuple_term(&self, t: &Term) -> VarMap<Term> {
+        unimplemented!()
+    }
+    fn term(&self, t: &Term) -> Term {
+        unimplemented!()
+    }
+    fn work_on(&self, c: &AbsClause) -> AbsClause {
+        // 2. if a variable is a tuple, then introduce new variables
+        // 3. replace the tuple access with the new variables
+        // 3.1 constructor is removed and inlined
+        // 3.2 tester is always true
+        // 3.3 accessor is replaced with the corresponding variable
+        // 3.4 if a variable appears as an argument of type tuple for a function, then we reconstruct it (e.g., a constructor for another dtype).
+        let mut new_vars = VarMap::new();
+        for v in c.vars.iter() {
+            match self.get_tuple(&v.typ) {
+                Some(ts) => {
+                    for (idx, t) in ts.iter().enumerate() {
+                        let info = VarInfo::new(
+                            format!("{}-{}", v.name, idx),
+                            t.clone(),
+                            new_vars.next_index(),
+                        );
+                        new_vars.push(info);
+                    }
+                }
+                None => {
+                    new_vars.push(v.clone());
+                }
+            }
+        }
+        let new_lhs_term = self.term(&c.lhs_term);
+        let mut new_lhs_preds = Vec::new();
+        for p in c.lhs_preds.iter() {
+            let sig = &self.instance.preds[p.pred].sig;
+            let mut new_args = VarMap::new();
+            for (tm, ty) in p.args.iter().zip(sig.iter()) {
+                match self.get_tuple(ty) {
+                    Some(ts) => {
+                        let mut terms = self.tuple_term(tm);
+                        assert!(terms.len() == ts.len());
+                        for t in terms {
+                            new_args.push(t);
+                        }
+                    }
+                    None => {
+                        new_args.push(self.term(tm));
+                    }
+                }
+            }
+            let new_pred = chc::PredApp {
+                pred: p.pred,
+                args: new_args.into(),
+            };
+            new_lhs_preds.push(new_pred);
+        }
+
+        let new_rhs = c.rhs.as_ref().map(|(p, args)| {
+            let mut new_args = Vec::new();
+            for (arg, ty) in args.iter().zip(self.instance.preds[*p].sig.iter()) {
+                match self.get_tuple(ty) {
+                    Some(ts) => {
+                        todo!("requires variable map here")
+                    }
+                    None => {
+                        new_args.push(*arg);
+                    }
+                }
+            }
+            (*p, new_args)
+        });
+        AbsClause {
+            vars: new_vars,
+            lhs_preds: new_lhs_preds,
+            lhs_term: new_lhs_term,
+            rhs: new_rhs,
+        }
+    }
+    fn expand_tuple(&mut self) {
+        // 0. redefine each predicate
+        let mut new_preds = PrdMap::new();
+        for p in self.instance.preds.iter() {
+            let mut new_sigs = VarMap::new();
+            for s in &p.sig {
+                match self.get_tuple(s) {
+                    Some(ts) => {
+                        for t in ts.iter() {
+                            new_sigs.push(t.clone());
+                        }
+                    }
+                    None => {
+                        new_sigs.push(s.clone());
+                    }
+                }
+            }
+            let p = crate::info::Pred::new(p.name.clone(), p.idx, new_sigs);
+            new_preds.push(p);
+        }
+        let mut new_clauses = Vec::new();
+        // 1. iter all the clauses
+        for c in self.instance.clauses.iter() {
+            let c = self.work_on(c);
+            new_clauses.push(c);
+        }
+        self.instance.preds = new_preds;
+        self.instance.clauses = new_clauses;
+    }
+}
+
 fn inline_adts<'a>(instance: &mut AbsInstance<'a>) {
-    for (name, dt) in dtyp::get_all().iter() {}
-    unimplemented!()
+    let mut trans = InlineTuple::new(instance);
+    trans.expand_tuple();
 }
 
 pub fn work<'a>(instance: &mut AbsInstance<'a>) {
+    inline_adts(instance);
     remove_neg_src_tst(instance);
     remove_not_bool(instance);
 }
