@@ -609,9 +609,7 @@ fn tuple_opt(typ: &DTyp) -> Option<Vec<Typ>> {
 impl<'a, 'b> InlineTuple<'a, 'b> {
     fn new(instance: &'a mut AbsInstance<'b>) -> Self {
         let mut typ2tup = HashMap::new(); // O(n) is OK
-        let mut n_types = 0; // count number of types for generating unique names later
         for (name, typ) in dtyp::get_all().iter() {
-            n_types += 1;
             match tuple_opt(typ) {
                 Some(types) => {
                     println!("name: {}", name);
@@ -629,7 +627,7 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
     }
     fn get_tuple(&self, typ: &Typ) -> Option<&Vec<Typ>> {
         match typ.get() {
-            typ::RTyp::DTyp { dtyp, prms } => match self.typ2tuple.get(dtyp) {
+            typ::RTyp::DTyp { dtyp, .. } => match self.typ2tuple.get(dtyp) {
                 Some(ts) => Some(ts),
                 None => None,
             },
@@ -651,7 +649,14 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
                 }
             },
             RTerm::DTypNew { typ, args, .. } => match self.get_tuple(typ) {
-                Some(types) => args.iter().map(|arg| self.term(varmap, arg)).collect(),
+                Some(types) => {
+                    let res: Res<VarMap<_>> =
+                        args.iter().map(|arg| self.term(varmap, arg)).collect();
+                    let res = res?;
+                    assert_eq!(res.len(), types.len());
+                    assert!(res.iter().zip(types.iter()).any(|(x, y)| { &x.typ() == y }));
+                    Ok(res)
+                }
                 None => unreachable!(),
             },
             _ => unreachable!(),
@@ -704,12 +709,7 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
             }
             RTerm::DTypSlc { .. } => unreachable!(),
             RTerm::DTypTst { .. } => unreachable!(),
-            RTerm::Fun {
-                depth,
-                typ,
-                name,
-                args,
-            } => todo!(),
+            RTerm::Fun { .. } => todo!(),
         }
     }
     fn work_on(&self, c: &AbsClause) -> Res<AbsClause> {
@@ -773,11 +773,13 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
             for (arg, ty) in args.iter().zip(self.instance.preds[*p].sig.iter()) {
                 match varmap.get(arg) {
                     Some(introduced) => {
+                        assert!(self.get_tuple(ty).is_some());
                         for i in introduced {
                             new_args.push(i.idx);
                         }
                     }
                     None => {
+                        assert!(self.get_tuple(ty).is_none());
                         new_args.push(*arg);
                     }
                 }
