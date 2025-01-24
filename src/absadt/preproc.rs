@@ -636,18 +636,14 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
     }
     fn tuple_term(&self, varmap: &HashMap<VarIdx, Vec<VarInfo>>, t: &Term) -> Res<VarMap<Term>> {
         match t.get() {
-            RTerm::Var(_, v) => match varmap.get(v) {
-                Some(introduced) => {
-                    let terms = introduced
-                        .iter()
-                        .map(|x| term::var(x.idx, x.typ.clone()))
-                        .collect();
-                    Ok(terms)
-                }
-                None => {
-                    bail!("")
-                }
-            },
+            RTerm::Var(_, v) => {
+                let introduced = varmap.get(v).unwrap();
+                let terms = introduced
+                    .iter()
+                    .map(|x| term::var(x.idx, x.typ.clone()))
+                    .collect();
+                Ok(terms)
+            }
             RTerm::DTypNew { typ, args, .. } => match self.get_tuple(typ) {
                 Some(types) => {
                     let res: Res<VarMap<_>> =
@@ -664,9 +660,10 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
     }
     fn term(&self, varmap: &HashMap<VarIdx, Vec<VarInfo>>, t: &Term) -> Res<Term> {
         match t.get() {
-            RTerm::Var(_, v) => {
-                assert!(!varmap.contains_key(v));
-                Ok(t.clone())
+            RTerm::Var(t, v) => {
+                let v_new = varmap.get(v).unwrap();
+                assert_eq!(v_new.len(), 1);
+                Ok(term::var(v_new[0].idx, t.clone()))
             }
             RTerm::Cst(_) => Ok(t.clone()),
             RTerm::CArray { typ, term, .. } => {
@@ -738,6 +735,10 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
                 }
                 None => {
                     new_vars.push(v.clone());
+                    let mut v = v.clone();
+                    v.idx = new_vars.next_index();
+                    varmap.insert(v.idx, vec![v.clone()]);
+                    new_vars.push(v);
                 }
             }
         }
@@ -770,18 +771,10 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
 
         let new_rhs = c.rhs.as_ref().map(|(p, args)| {
             let mut new_args = Vec::new();
-            for (arg, ty) in args.iter().zip(self.instance.preds[*p].sig.iter()) {
-                match varmap.get(arg) {
-                    Some(introduced) => {
-                        assert!(self.get_tuple(ty).is_some());
-                        for i in introduced {
-                            new_args.push(i.idx);
-                        }
-                    }
-                    None => {
-                        assert!(self.get_tuple(ty).is_none());
-                        new_args.push(*arg);
-                    }
+            for arg in args.iter() {
+                let introduced = varmap.get(arg).unwrap();
+                for i in introduced {
+                    new_args.push(i.idx);
                 }
             }
             (*p, new_args)
@@ -798,6 +791,7 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
         // 0. redefine each predicate
         let mut new_preds = PrdMap::new();
         for p in self.instance.preds.iter() {
+            println!("pred: {}", p);
             let mut new_sigs = VarMap::new();
             for s in &p.sig {
                 match self.get_tuple(s) {
@@ -839,6 +833,10 @@ fn inline_adts<'a>(instance: &mut AbsInstance<'a>) {
 
 pub fn work<'a>(instance: &mut AbsInstance<'a>) {
     remove_neg_src_tst(instance);
+    let mut file = instance.instance_log_files("remove_neg_src").unwrap();
+    instance.dump_as_smt2(&mut file, "", false).unwrap();
     remove_not_bool(instance);
+    let mut file = instance.instance_log_files("remove_not_bool").unwrap();
+    instance.dump_as_smt2(&mut file, "", false).unwrap();
     inline_adts(instance);
 }
