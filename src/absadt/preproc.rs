@@ -607,23 +607,22 @@ fn tuple_opt(typ: &DTyp) -> Option<Vec<Typ>> {
 }
 
 impl<'a, 'b> InlineTuple<'a, 'b> {
-    fn new(instance: &'a mut AbsInstance<'b>) -> Self {
+    fn new(instance: &'a mut AbsInstance<'b>) -> Res<Self> {
         let mut typ2tup = HashMap::new(); // O(n) is OK
-        for (name, typ) in dtyp::get_all().iter() {
+        for (_, typ) in dtyp::get_all().iter() {
             match tuple_opt(typ) {
                 Some(types) => {
-                    println!("name: {}", name);
-                    println!("typ: {}", typ);
-                    println!("types: {:?}", types);
                     typ2tup.insert(typ.clone(), types);
                 }
-                None => {}
+                None => {
+                    bail!("unsupported type: {}", typ);
+                }
             }
         }
-        Self {
+        Ok(Self {
             instance,
             typ2tuple: typ2tup,
-        }
+        })
     }
     fn get_tuple(&self, typ: &Typ) -> Option<&Vec<Typ>> {
         match typ.get() {
@@ -644,18 +643,31 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
                     .collect();
                 Ok(terms)
             }
-            RTerm::DTypNew { typ, args, .. } => match self.get_tuple(typ) {
-                Some(types) => {
-                    let res: Res<VarMap<_>> =
-                        args.iter().map(|arg| self.term(varmap, arg)).collect();
-                    let res = res?;
-                    assert_eq!(res.len(), types.len());
-                    assert!(res.iter().zip(types.iter()).any(|(x, y)| { &x.typ() == y }));
+            RTerm::DTypNew { typ, args, .. } => {
+                let res: Res<VarMap<_>> = args.iter().map(|arg| self.term(varmap, arg)).collect();
+                let res = res?;
+                match self.get_tuple(typ) {
+                    Some(types) => {
+                        assert_eq!(res.len(), types.len());
+                        assert!(res.iter().zip(types.iter()).any(|(x, y)| { &x.typ() == y }));
+                        Ok(res)
+                    }
+                    None => bail!("non tuple appears"),
+                }
+            }
+            RTerm::Cst(c) => match c.get() {
+                val::RVal::DTypNew { typ, args, .. } => {
+                    if self.get_tuple(typ).is_none() {
+                        bail!("not supported")
+                    }
+                    let res: VarMap<_> = args.iter().map(|arg| term::cst(arg.clone())).collect();
                     Ok(res)
                 }
-                None => unreachable!(),
+                _ => bail!("not supported"),
             },
-            _ => unreachable!(),
+            x => {
+                panic!("unexpected term: {}", x);
+            }
         }
     }
     fn term(&self, varmap: &HashMap<VarIdx, Vec<VarInfo>>, t: &Term) -> Res<Term> {
@@ -694,15 +706,14 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
                     Ok(term::app(op.clone(), args))
                 }
             }
-            RTerm::DTypNew {
-                typ, name, args, ..
-            } => {
+            RTerm::DTypNew { typ, .. } => {
                 assert!(self.get_tuple(typ).is_none());
-                let args = args
-                    .iter()
-                    .map(|t| self.term(varmap, t))
-                    .collect::<Res<Vec<_>>>()?;
-                Ok(term::dtyp_new(typ.clone(), name, args))
+                bail!("not supported");
+                // let args = args
+                //     .iter()
+                //     .map(|t| self.term(varmap, t))
+                //     .collect::<Res<Vec<_>>>()?;
+                // Ok(term::dtyp_new(typ.clone(), name, args))
             }
             RTerm::DTypSlc { .. } => unreachable!(),
             RTerm::DTypTst { .. } => unreachable!(),
@@ -734,10 +745,10 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
                     varmap.insert(v.idx, introduced);
                 }
                 None => {
-                    new_vars.push(v.clone());
+                    let old_idx = v.idx;
                     let mut v = v.clone();
                     v.idx = new_vars.next_index();
-                    varmap.insert(v.idx, vec![v.clone()]);
+                    varmap.insert(old_idx, vec![v.clone()]);
                     new_vars.push(v);
                 }
             }
@@ -791,7 +802,6 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
         // 0. redefine each predicate
         let mut new_preds = PrdMap::new();
         for p in self.instance.preds.iter() {
-            println!("pred: {}", p);
             let mut new_sigs = VarMap::new();
             for s in &p.sig {
                 match self.get_tuple(s) {
@@ -822,8 +832,8 @@ impl<'a, 'b> InlineTuple<'a, 'b> {
 
 /// Assumption: AdtEql is introduced for all the equality on data types
 fn inline_adts<'a>(instance: &mut AbsInstance<'a>) {
-    let mut trans = InlineTuple::new(instance);
-    match trans.expand_tuple() {
+    let res = InlineTuple::new(instance).map(|mut trans| trans.expand_tuple());
+    match res {
         Ok(_) => {}
         Err(e) => {
             log_info!("Failed to expand tuples: {}", e);

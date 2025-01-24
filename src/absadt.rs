@@ -53,7 +53,7 @@ mod learn;
 mod preproc;
 
 /// Number of expansion depth for synthesizing the initial catamorphism
-const INIT_EXPANSION_DEPTH: usize = 2;
+const INIT_EXPANSION_DEPTH: usize = 1;
 const BMC_DEPTH: usize = 2;
 
 pub struct AbsConf<'original> {
