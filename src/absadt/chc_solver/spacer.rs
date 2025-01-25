@@ -78,7 +78,7 @@ impl Spacer {
         } else if line.starts_with("unsat") {
             Ok(false)
         } else {
-            bail!("Unexpected output: {}", line)
+            bail!("Unexpected output (spacer): {}", line)
         }
     }
 }
