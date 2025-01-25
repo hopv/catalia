@@ -53,8 +53,8 @@ mod learn;
 mod preproc;
 
 /// Number of expansion depth for synthesizing the initial catamorphism
-const INIT_EXPANSION_DEPTH: usize = 1;
-const BMC_DEPTH: usize = 2;
+const INIT_EXPANSION_DEPTH: usize = 0;
+const BMC_DEPTH: usize = 3;
 
 pub struct AbsConf<'original> {
     pub cexs: Vec<chc::CEX>,
@@ -232,7 +232,7 @@ impl<'original> AbsConf<'original> {
     ///
     /// returns true if the instance is unsatisfiable
     fn bmc(&mut self) -> Res<bool> {
-        for n in (1..BMC_DEPTH + 1).rev() {
+        for n in (1..BMC_DEPTH).rev() {
             log_info!("trying bmc with: {}", n);
             let cex = self.instance.get_n_expansion(n);
             match cex.check_sat_opt(&mut self.solver)? {
