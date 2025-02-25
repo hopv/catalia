@@ -1,4 +1,12 @@
-![CI](https://github.com/hopv/hoice/workflows/ci/badge.svg)
+# Catalia
+
+**Catalia** is a CHC solver specialized for algebraic data types, forked from [HoIce](https://github.com/hopv/hoice). While much of the codebase remains the same, we maintain Catalia as a separate solver due to the following reasons:
+
+1. Catalia utilizes only the frontend parts of HoIce (e.g., parsing and clause manipulation) and does not rely on its Ice component.
+2. Unlike HoIce, Catalia employs multiple CHC solvers as Catalia's backend solver, including HoIce, Spacer, and Eldarica (see our paper for technical details). Since this approach differs significantly from a mere extension of HoIce, we have opted to maintain a separate repository to reflect this distinction.
+
+
+# HoIce (original README)
 
 `hoice` is an ICE-based Constrained Horn Clause (CHC) solver.
 
