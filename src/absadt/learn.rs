@@ -223,8 +223,8 @@ impl Encoder {
 
 impl TemplateScheduler {
     const N_TEMPLATES: usize = 8;
-
-    const TEMPLATE_SCHDEDULING: [TemplateSchedItem; Self::N_TEMPLATES] = [
+	
+    const TEMPLATE_SCHEDULING: [TemplateSchedItem; Self::N_TEMPLATES] = [
         TemplateSchedItem {
             n_encs: 1,
             typ: TemplateType::BoundLinear { min: -1, max: 1 },
@@ -281,7 +281,7 @@ impl std::iter::Iterator for TemplateScheduler {
             if self.idx >= Self::N_TEMPLATES {
                 return None;
             }
-            let next_template = &Self::TEMPLATE_SCHDEDULING[self.idx];
+            let next_template = &Self::TEMPLATE_SCHEDULING[self.idx];
             self.idx += 1;
 
             for (_, v) in self.enc.iter() {

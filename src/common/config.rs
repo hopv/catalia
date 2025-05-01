@@ -1167,6 +1167,8 @@ pub struct Config {
     pub ice: IceConf,
     /// Teacher configuration.
     pub teacher: TeacherConf,
+    /// Optional file that describes a catamorphism to apply
+    catamorphism_file: Option<String>,
 }
 impl ColorExt for Config {
     fn styles(&self) -> &Styles {
@@ -1224,6 +1226,12 @@ impl Config {
         } else {
             None
         }
+    }
+
+    /// Catamorphism input file.
+    #[inline]
+    pub fn in_file_catamorphism(&self) -> Option<&String> {
+        self.catamorphism_file.as_ref()
     }
 
     /// Parses command-line arguments and generates the configuration.
@@ -1294,6 +1302,11 @@ impl Config {
         // Timeout.
         let term_simpl = int_of_matches(&matches, "term_simpl");
 
+        // Catamorphism file
+        let catamorphism_file = matches
+            .value_of("catamorphism input file")
+            .map(|s| s.to_string());
+
         let instance = InstanceConf::new(&matches);
         let preproc = PreprocConf::new(&matches);
         let solver = SmtConf::new(&matches);
@@ -1319,6 +1332,7 @@ impl Config {
             solver,
             ice,
             teacher,
+            catamorphism_file,
         }
     }
 
@@ -1458,6 +1472,16 @@ impl Config {
                     .number_of_values(1)
                     .display_order(order())
                     .hide(true),
+            )
+            .arg(
+                Arg::new("catamorphism input file")
+                    .long("--catamorphism")
+                    .help("file that describes the catamorphism to use")
+                    .value_name("filename")
+                    .value_parser(clap::value_parser!(String))
+                    .number_of_values(1)
+                    .multiple_occurrences(false)
+                    .display_order(order()),
             )
     }
 

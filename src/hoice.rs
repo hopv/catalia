@@ -68,14 +68,15 @@ pub fn work() -> Res<()> {
             .open(file_path)
             .chain_err(|| format!("while opening input file `{}`", conf.emph(file_path)))?;
 
-        read_and_work(file, true, false, false)?;
+		read_and_work(file, conf.in_file_catamorphism().map(|s| s.to_owned()), true, false, false)?;
+		
         Ok(())
     } else {
         // Reading from stdin.
 
         let stdin = ::std::io::stdin();
 
-        read_and_work(stdin, false, false, false)?;
+        read_and_work(stdin, None, false, false, false)?;
         Ok(())
     }
 }
@@ -93,6 +94,7 @@ pub fn work() -> Res<()> {
 /// - `stop_on_err`: forces to stop at the first error. Only used in tests.
 pub fn read_and_work<R: ::std::io::Read>(
     reader: R,
+    approximations_file: Option<String>,
     file_input: bool,
     stop_on_check: bool,
     stop_on_err: bool,
@@ -219,7 +221,8 @@ pub fn read_and_work<R: ::std::io::Read>(
                     } else {
                         let arc_instance = Arc::new(instance);
 
-                        let solve_res = absadt::work(&arc_instance, &profiler);
+                        let solve_res =
+                            absadt::work(&arc_instance, &profiler, approximations_file.as_deref());
 
                         instance = unwrap_arc(arc_instance)
                             .chain_err(|| "while trying to recover instance")?;
