@@ -77,7 +77,7 @@ Future features:
 # Latest version
 
 This repository hosts the latest stable version of catalia. See the [main
-developer's fork][main dev fork] for a cutting edge, although unstable,
+developer's fork](https://github.com/moratorium08/hoice) for a cutting edge, although unstable,
 version.
 
 
