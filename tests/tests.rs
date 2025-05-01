@@ -89,7 +89,7 @@ fn run_err() -> Res<()> {
                 .read(true)
                 .open(entry.path())
                 .chain_err(|| format!("while opening file {}", file_name))?;
-            match read_and_work(file, true, true, true) {
+            match read_and_work(file, None, true, true, true) {
                 Err(e) => println!("got {}", e),
                 Ok((model, _)) => {
                     return Err(format!(
@@ -134,7 +134,7 @@ fn run_sat_on<P: AsRef<::std::path::Path> + ?Sized>(path: &P) -> Res<()> {
         .read(true)
         .open(file_name)
         .chain_err(|| format!("while opening file {}", file_name.display()))?;
-    let (model, _) = read_and_work(file, true, true, true)
+    let (model, _) = read_and_work(file, None, true, true, true)
         .chain_err(|| "while reading file and getting model")?;
     println!("- is okay");
     if let Some(_) = model {
@@ -175,7 +175,7 @@ fn run_unsat() -> Res<()> {
                 .read(true)
                 .open(entry.path())
                 .chain_err(|| format!("while opening file {}", file_name))?;
-            let (model, instance) = read_and_work(file, true, true, true)?;
+            let (model, instance) = read_and_work(file, None, true, true, true)?;
             if let Some(model) = model {
                 println!("sat");
                 instance.write_model(&model, &mut ::std::io::stdout())?;

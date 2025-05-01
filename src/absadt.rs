@@ -45,6 +45,7 @@ use crate::info::{Pred, VarInfo};
 
 use crate::unsat_core::UnsatRes;
 
+mod catamorphism_parser;
 mod chc;
 mod chc_solver;
 mod enc;
@@ -245,7 +246,7 @@ impl<'original> AbsConf<'original> {
     }
 
     /// Main CEGAR loop of Catalia
-    fn run(&mut self) -> Res<either::Either<(), ()>> {
+    fn run(&mut self, approximation_file: Option<&str>) -> Res<either::Either<(), ()>> {
         //self.playground()?;
         self.initialize_encs()?;
         let mut file = self.instance.instance_log_files("preprocessed")?;
@@ -258,6 +259,27 @@ impl<'original> AbsConf<'original> {
         // Bounded model checking
         if self.synthesize_initial_encs()? {
             return Ok(either::Right(()));
+        }
+
+        // The approximation map
+        if let Some(catamorphism_str) = approximation_file {
+            let parsed_approximations =  catamorphism_parser::parse_catamorphism(catamorphism_str)?;
+			log_info!("Testing the input approximations");
+            self.encs =
+                catamorphism_parser::build_encoding_from_approx(parsed_approximations, &self.encs)?;
+            let encoded = self.encode();
+            self.log_epoch(&encoded)?;
+            log_debug!("I produced the abstracted file");
+            match encoded.check_sat()? {
+                either::Left(()) => {
+                    return Ok(either::Left(()));
+                }
+                either::Right(x) => {
+                    let cex = self.instance.get_cex(&x);
+                    log_debug!("Found a counter-example {cex}");
+                    return Ok(either::Right(()));
+                }
+            }
         }
 
         let r = loop {
@@ -287,7 +309,7 @@ impl<'original> AbsConf<'original> {
 impl<'a> AbsConf<'a> {
     pub fn encode_clause(
         &self,
-        c: &chc::AbsClause,
+        c: &chc::AbsClause
     ) -> chc::AbsClause {
         let ctx = enc::EncodeCtx::new(&self.encs);
         let (new_vars, introduced) = enc::tr_varinfos(&self.encs, &c.vars);
@@ -431,6 +453,7 @@ impl<'a> AbsConf<'a> {
         preds: &mut PrdMap<Pred>,
     ) -> (BTreeMap<Typ, PrdIdx>, Vec<chc::AbsClause>) {
         let mut enc_map = BTreeMap::new();
+
         // prepare preds
         for (typ, _) in self.encs.iter() {
             let pi = preds.next_index();
@@ -528,12 +551,13 @@ impl<'a> AbsConf<'a> {
 pub fn work(
     instance: &Arc<Instance>,
     profiler: &Profiler,
+    approximation_to_test: Option<&str>,
 ) -> Res<Option<Either<ConjCandidates, UnsatRes>>> {
     log_info!("ABS ADT is enabled");
     //playground(instance);
 
     let mut absconf = AbsConf::new(instance, profiler)?;
-    let r = match absconf.run()? {
+    let r = match absconf.run(approximation_to_test)? {
         either::Left(()) => either::Left(ConjCandidates::new()),
         either::Right(_) => either::Right(UnsatRes::None),
     };
