@@ -113,7 +113,7 @@ fn run_sat() -> Res<()> {
     for entry in files {
         let entry = map_err!(entry, "while reading entry");
         let file_name = format!("{}", entry.file_name().to_string_lossy());
-        if map_err!(
+        if !file_name.starts_with("no-test-") && map_err!(
             entry.file_type(),
             "while reading entry (file type of `{}`)",
             file_name
@@ -162,7 +162,7 @@ fn run_unsat() -> Res<()> {
     for entry in files {
         let entry = map_err!(entry, "while reading entry");
         let file_name = format!("{}", entry.file_name().to_string_lossy());
-        if map_err!(
+        if !file_name.starts_with("no-test-") && map_err!(
             entry.file_type(),
             "while reading entry (file type of `{}`)",
             file_name
