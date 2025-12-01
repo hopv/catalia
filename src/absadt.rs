@@ -370,9 +370,9 @@ impl<'a> AbsConf<'a> {
 
         // 1. generate arguments for the constructor
         let mut vars = VarMap::new();
-        for ty in arg_typs {
+        for (i, ty) in arg_typs.enumerate() {
             let idx = vars.next_index();
-            let var = VarInfo::new("arg", ty.clone(), idx);
+            let var = VarInfo::new(format!("!arg_{}", i), ty.clone(), idx);
             vars.push(var);
         }
         // 2. generate head argument
