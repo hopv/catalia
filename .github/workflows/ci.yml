@@ -16,9 +16,9 @@ jobs:
         ]
         include:
         - os: macos-latest
-          Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.8.17/z3-4.8.17-x64-osx-10.16.zip"
+          Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-osx-11.7.10.zip"
         - os: ubuntu-latest
-          Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.8.17/z3-4.8.17-x64-glibc-2.31.zip"
+          Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-glibc-2.31.zip"
 
     runs-on: ${{ matrix.os }}
 
