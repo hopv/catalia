@@ -440,7 +440,7 @@ impl<'a> AbsConf<'a> {
                     enc::to_valid_symbol(typ.to_string()),
                 ),
                 pi,
-                vec![typ::int()].into(),
+                vec![typ.clone()].into(),
             );
             enc_map.insert(typ.clone(), p.idx);
             preds.push(p);
