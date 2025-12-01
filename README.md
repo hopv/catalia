@@ -62,17 +62,14 @@ If Catalia does not work as expected, please check the version of Z3 you are usi
 
 # Features
 
-- [x] `define-fun`s
-- [x] `Bool`
+- [ ] `define-fun`s
+- [ ] `Bool`
 - [x] `Int`
-- [x] `Real`
-- [x] `Array` (naive)
+- [ ] `Real`
+- [ ] `Array` (naive)
 - [x] `List`
 - [x] (mutually recursive) ADTs
 
-Future features:
-
-- [ ] user-specified qualifiers through `define-fun`s
 
 # Latest version
 
