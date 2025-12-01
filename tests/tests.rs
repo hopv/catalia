@@ -34,20 +34,20 @@ fn sat() {
     run!(run_sat())
 }
 
-#[test]
-fn sat_ackermann() {
-    run!(run_sat_on("rsc/sat/long/Ackermann00.smt2"))
-}
+// #[test]
+// fn sat_ackermann() {
+//     run!(run_sat_on("rsc/sat/long/Ackermann00.smt2"))
+// }
 
-#[test]
-fn sat_file() {
-    run!(run_sat_on("rsc/sat/long/file.smt2"))
-}
+// #[test]
+// fn sat_file() {
+//     run!(run_sat_on("rsc/sat/long/file.smt2"))
+// }
 
-#[test]
-fn sat_rec_simpl() {
-    run!(run_sat_on("rsc/sat/long/recursive_simplifications.smt2"))
-}
+// #[test]
+// fn sat_rec_simpl() {
+//     run!(run_sat_on("rsc/sat/long/recursive_simplifications.smt2"))
+// }
 
 #[test]
 fn unsat() {

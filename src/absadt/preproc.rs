@@ -440,6 +440,22 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                 Op::AdtEql => todo!(),
                 Op::Ite => todo!(),
                 Op::Distinct => todo!(),
+                Op::Gt => {
+                    debug_assert!(args.len() == 2);
+                    term::app(Op::Le, args.clone())
+                }
+                Op::Ge => {
+                    debug_assert!(args.len() == 2);
+                    term::app(Op::Lt, args.clone())
+                }
+                Op::Le => {
+                    debug_assert!(args.len() == 2);
+                    term::app(Op::Gt, args.clone())
+                }
+                Op::Lt => {
+                    debug_assert!(args.len() == 2);
+                    term::app(Op::Ge, args.clone())
+                }
                 Op::Add
                 | Op::Sub
                 | Op::Mul
@@ -448,10 +464,6 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                 | Op::Div
                 | Op::Rem
                 | Op::Mod
-                | Op::Gt
-                | Op::Ge
-                | Op::Le
-                | Op::Lt
                 | Op::ToInt
                 | Op::ToReal
                 | Op::Store
