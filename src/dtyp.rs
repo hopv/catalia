@@ -100,6 +100,7 @@
 //! [`DTyp`]: type.DTyp.html (DTyp type)
 
 use crate::{common::*, parse::Pos};
+use std::sync::OnceLock;
 
 mylib::wrap_usize! {
     #[doc = "Type parameter indices."]
@@ -599,16 +600,16 @@ lazy_static! {
     static ref selector_set: RwLock<BTreeSet<String>> = RwLock::new(
         BTreeSet::new()
     ) ;
+
+    /// Serialize List initialization to avoid concurrent double-registering while testing.
+    static ref list_once: OnceLock<DTyp> = OnceLock::new();
 }
 
-/// Creates the list datatype.
+/// Creates the list datatype if not already registered, and returns it.
 ///
 /// Only available in test mode.
 pub fn create_list_dtyp() {
-    let _ = new(RDTyp::list(), |_, blah| {
-        format!("failed to create List datatype: {}", blah)
-    });
-    ()
+    get_or_init_list().unwrap();
 }
 
 /// True if there is at least one datatype declared.
@@ -918,12 +919,20 @@ pub fn get(dtyp: &str) -> Res<DTyp> {
     if let Some(res) = maybe_res {
         Ok(res)
     } else if dtyp == "List" {
-        new(RDTyp::list(), |_, blah| {
-            format!("failed to create List datatype: {}", blah)
-        })
+        get_or_init_list()
     } else {
         bail!("unknown datatype `{}`", dtyp)
     }
+}
+
+fn get_or_init_list() -> Res<DTyp> {
+    let list = list_once.get_or_init(|| {
+        new(RDTyp::list(), |_, blah| {
+            format!("failed to create List datatype: {}", blah)
+        })
+        .expect("failed to create List datatype")
+    });
+    Ok(list.clone())
 }
 
 /// All the datatypes.
