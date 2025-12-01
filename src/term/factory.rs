@@ -1140,7 +1140,7 @@ pub fn eq(lhs: Term, rhs: Term) -> Term {
 /// ```rust
 /// # use hoice::common::*;
 /// let t = term::adteq( term::int_var(7), term::int(2) );
-/// assert_eq! { &format!("{}", t), "(= (+ v_7 (- 2)) 0)" }
+/// assert_eq! { &format!("{}", t), "(= v_7 2)" }
 /// ```
 #[inline]
 pub fn adteq(lhs: Term, rhs: Term) -> Term {
