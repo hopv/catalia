@@ -81,7 +81,8 @@ fn run_err() -> Res<()> {
             entry.file_type(),
             "while reading entry (file type of `{}`)",
             file_name
-        ).is_file()
+        )
+        .is_file()
         {
             println!("looking at `{}`", file_name);
             let file = OpenOptions::new()
@@ -94,7 +95,8 @@ fn run_err() -> Res<()> {
                     return Err(format!(
                         "expected error, got {}",
                         if model.is_some() { "sat" } else { "unsat" }
-                    ).into())
+                    )
+                    .into())
                 }
             }
         }
@@ -115,7 +117,8 @@ fn run_sat() -> Res<()> {
             entry.file_type(),
             "while reading entry (file type of `{}`)",
             file_name
-        ).is_file()
+        )
+        .is_file()
         {
             run_sat_on(&entry.path())?
         }
@@ -163,7 +166,8 @@ fn run_unsat() -> Res<()> {
             entry.file_type(),
             "while reading entry (file type of `{}`)",
             file_name
-        ).is_file()
+        )
+        .is_file()
         {
             println!("looking at `{}`", file_name);
             let file = OpenOptions::new()
