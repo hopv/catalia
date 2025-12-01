@@ -288,7 +288,6 @@ impl<'a> AbsConf<'a> {
     pub fn encode_clause(
         &self,
         c: &chc::AbsClause,
-        enc_map: &BTreeMap<Typ, Vec<PrdIdx>>,
     ) -> chc::AbsClause {
         let ctx = enc::EncodeCtx::new(&self.encs);
         let (new_vars, introduced) = enc::tr_varinfos(&self.encs, &c.vars);
@@ -329,24 +328,6 @@ impl<'a> AbsConf<'a> {
             (*pred, new_args)
         });
 
-        // add enc_pred condition
-        for info in c.vars.iter() {
-            if !info.typ.is_dtyp() {
-                continue;
-            }
-            let approx_vars = introduced.get(&info.idx).unwrap();
-            let enc_preds = enc_map.get(&info.typ).unwrap();
-            assert_eq!(approx_vars.len(), enc_preds.len());
-            for (approx_var, enc_pred) in approx_vars.iter().zip(enc_preds.iter()) {
-                let args: VarMap<_> = vec![term::var(approx_var.idx, typ::int())].into();
-                let app = chc::PredApp {
-                    pred: *enc_pred,
-                    args: args.into(),
-                };
-                lhs_preds.push(app);
-            }
-        }
-
         let res = chc::AbsClause {
             vars: new_vars,
             lhs_term,
@@ -376,52 +357,61 @@ impl<'a> AbsConf<'a> {
     fn generate_approx_constraint(
         &self,
         pidx: &PrdIdx,
-        enc_map: &BTreeMap<Typ, Vec<PrdIdx>>,
-        t: &Term,
+        typ: &Typ,
+        constr_name: &str,
+        enc_map: &BTreeMap<Typ, PrdIdx>,
         arg_typs: impl Iterator<Item = Typ>,
-        // args of the approx, which corresponds to the variables bound by this clause
-        args: &VarMap<VarInfo>,
     ) -> chc::AbsClause {
-        let mut idx: VarIdx = 0.into();
         let mut lhs_preds = Vec::new();
-        for ty in arg_typs.into_iter() {
-            match self.encs.get(&ty) {
-                Some(e) => {
-                    // check if the given argument is possible
-                    let enc_preds = enc_map.get(&ty).unwrap();
-                    for enc_idx in 0..e.n_params {
-                        let arg = &args[idx];
-                        let arg = term::var(arg.idx, arg.typ.clone());
-                        let args: VarMap<_> = vec![arg].into();
-                        idx.inc();
-                        let pred = enc_preds[enc_idx];
-                        let app = chc::PredApp {
-                            pred,
-                            args: args.into(),
-                        };
-                        lhs_preds.push(app);
-                    }
-                }
+
+        // P(y) <= y == constr_name(x1, ..., xn) /\ P1(x1) /\ ... /\ Pn(xn)
+        //              ^^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^
+        //                  head_argument              constraints
+
+        // 1. generate arguments for the constructor
+        let mut vars = VarMap::new();
+        for (i, ty) in arg_typs.enumerate() {
+            let idx = vars.next_index();
+            let var = VarInfo::new(format!("!arg_{}", i), ty.clone(), idx);
+            vars.push(var);
+        }
+        // 2. generate head argument
+        let head_argument = term::dtyp_new(
+            typ.clone(),
+            constr_name,
+            vars
+                .iter()
+                .map(|v| term::var(v.idx, v.typ.clone()))
+                .collect(),
+        );
+
+        // 3. generate constraints for each dtyp argument
+        for var in vars.iter() {
+            match enc_map.get(&var.typ) {
+                Some(p) => {
+                    let args: VarMap<_> = vec![term::var(var.idx, var.typ.clone())].into();
+                    let app = chc::PredApp {
+                        pred: *p,
+                        args: args.into(),
+                    };
+                    lhs_preds.push(app);
+                },
                 None => {
-                    assert!(!ty.is_dtyp());
-                    // nop since the variable should be int or something,
-                    // which is not approximated
-                    idx.inc();
+                    assert!(!var.typ.is_dtyp());
                 }
             }
         }
-        // constraint on the result
-        let res_var = VarInfo::new("res", typ::int(), idx);
-        let lhs_term = term::adteq(term::var(res_var.idx, res_var.typ.clone()), t.clone());
 
-        // head
+        let res_var = VarInfo::new("res", typ.clone(), vars.next_index());
+        vars.push(res_var.clone());
+        let constr_for_head = term::adteq(
+            term::var(vars.last().unwrap().idx, typ.clone()),
+            head_argument,
+        );
         let head_args = vec![res_var.idx];
-
-        let mut vars = args.clone();
-        vars.push(res_var);
         chc::AbsClause {
             vars,
-            lhs_term,
+            lhs_term: constr_for_head,
             lhs_preds,
             rhs: Some((*pidx, head_args)),
         }
@@ -429,76 +419,96 @@ impl<'a> AbsConf<'a> {
 
     /// Generate a predicate that represents the encoder's possible outputs
     ///
+    /// P_ilist(nil) <= true
+    /// P_ilist(cons(x, l)) <= P_ilist(l)
+    ///
+    /// This will be transformed to the following clauses after the abstraction:
     /// Ex) ilist where nil |-> 0, cons(x, l) |-> l + 1
     /// P_ilist_0(r) <= r = 0
     /// P_ilist_0(r) <= r = l + 1 /\ P_ilist_0(l)
-    fn encoder_preds(
+    fn generate_admissibility_preds(
         &self,
         preds: &mut PrdMap<Pred>,
-        clauses: &mut Vec<chc::AbsClause>,
-    ) -> BTreeMap<Typ, Vec<PrdIdx>> {
+    ) -> (BTreeMap<Typ, PrdIdx>, Vec<chc::AbsClause>) {
         let mut enc_map = BTreeMap::new();
         // prepare preds
-        for (typ, enc) in self.encs.iter() {
-            let mut ps = Vec::with_capacity(enc.n_params);
-            for i in 0..enc.n_params {
-                let pi = preds.next_index();
-                ps.push(pi);
-                let p = Pred::new(
-                    format!(
-                        "encoder_pred_{}_{}",
-                        enc::to_valid_symbol(typ.to_string()),
-                        i
-                    ),
-                    pi,
-                    vec![typ::int()].into(),
-                );
-                preds.push(p);
-            }
-            enc_map.insert(typ.clone(), ps);
+        for (typ, _) in self.encs.iter() {
+            let pi = preds.next_index();
+            let p = Pred::new(
+                format!(
+                    "encoder_pred_{}",
+                    enc::to_valid_symbol(typ.to_string()),
+                ),
+                pi,
+                vec![typ.clone()].into(),
+            );
+            enc_map.insert(typ.clone(), p.idx);
+            preds.push(p);
         }
 
-        // generate constraints
-        for (typ, enc) in self.encs.iter() {
+        // generate clauses
+        let mut clauses = Vec::new();
+        for (typ, _) in self.encs.iter() {
             let (dt, prms) = typ.dtyp_inspect().unwrap();
-
-            for (idx, pidx) in enc_map.get(typ).unwrap().iter().enumerate() {
-                // for each constructor, we generate a constraint
-                for (constructor_name, sels) in dt.news.iter() {
-                    // e.g.
-                    // constr_name = cons
-                    // appprox = \x. \l. l + 1
-                    let approx = enc.approxs.get(constructor_name).unwrap();
-                    let t = &approx.terms[idx];
-                    let types = sels.iter().map(|(_, ty)| ty.to_type(Some(prms)).unwrap());
-                    let clause =
-                        self.generate_approx_constraint(pidx, &enc_map, t, types, &approx.args);
-                    clauses.push(clause);
-                }
+            let pidx = enc_map.get(typ).unwrap();
+            // for each constructor, we generate a different clause
+            for (constructor_name, sels) in dt.news.iter() {
+                let types = sels.iter().map(|(_, ty)| ty.to_type(Some(prms)).unwrap());
+                let clause =
+                    self.generate_approx_constraint(pidx, typ, constructor_name, &enc_map, types);
+                clauses.push(clause);
             }
         }
-        enc_map
+        (enc_map, clauses)
     }
+
+    fn append_admissibility_check(
+        &self,
+        clauses: &[chc::AbsClause],
+        enc_map: &BTreeMap<Typ, PrdIdx>,
+    ) -> Vec<chc::AbsClause> {
+        let mut res = Vec::new();
+        for c in clauses.iter() {
+            let mut lhs_preds = c.lhs_preds.clone();
+            // for each dtyp variable, we add the admissibility predicate
+            for var in c.vars.iter() {
+                if !var.typ.is_dtyp() {
+                    continue;
+                }
+                let approx_pred = enc_map.get(&var.typ).unwrap();
+                let args: VarMap<_> = vec![term::var(var.idx, var.typ.clone())].into();
+                let app = chc::PredApp {
+                    pred: *approx_pred,
+                    args: args.into(),
+                    };
+                lhs_preds.push(app);
+            }
+            res.push(chc::AbsClause {
+                vars: c.vars.clone(),
+                lhs_term: c.lhs_term.clone(),
+                lhs_preds,
+                rhs: c.rhs.clone(),
+            });
+        }
+        res
+    }
+
     pub fn encode(&self) -> chc::AbsInstance {
-        let mut preds = self
-            .instance
-            .preds
+        // 1. append admissibility predicates and clauses
+        let mut preds = self.instance.preds.clone();
+        let (enc_map, clauses2) = self.generate_admissibility_preds(&mut preds);
+        let mut clauses = self.append_admissibility_check(&self.instance.clauses, &enc_map);
+        clauses.extend(clauses2);
+
+        // 2. encode the clauses by using the current catamorphism
+        let preds = preds
             .iter()
             .map(|p| self.encode_pred(p))
             .collect();
-        let mut clauses2 = Vec::new();
 
-        let enc_map = self.encoder_preds(&mut preds, &mut clauses2);
-
-        let mut clauses: Vec<_> = self
-            .instance
-            .clauses
-            .iter()
-            .map(|c| self.encode_clause(c, &enc_map))
+        let clauses: Vec<_> = clauses.iter()
+            .map(|c| self.encode_clause(c))
             .collect();
-        // the order of clauses matters
-        // now, it must be the original clauses first, and then the encoder clauses
-        clauses.extend(clauses2);
 
         self.instance.clone_with_clauses(clauses, preds)
     }
