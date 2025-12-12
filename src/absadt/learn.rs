@@ -603,7 +603,7 @@ where
     let varname = varname.as_ref();
     let mut res = VarMap::new();
     for i in 0..n {
-        let idx = variables.next_index();
+        let idx = VarIdx::from(variables.next_index());
         let info = VarInfo::new(format!("{varname}-{i}"), typ::int(), idx);
         res.push(idx);
         variables.push(info);
