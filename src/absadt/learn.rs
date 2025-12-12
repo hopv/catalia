@@ -419,6 +419,50 @@ fn test_linear_approx_apply() {
     }
 }
 
+#[test]
+fn test_linear_approx_apply_two_terms() {
+    let mut args = VarInfos::new();
+    let idx = VarIdx::from(0);
+    args.push(VarInfo::new("x".to_string(), typ::int(), idx));
+    let mut fvs = VarInfos::new();
+    // mimic TemplateInfo behavior: template parameters start after the argument indices
+    for arg in args.iter() {
+        fvs.push(arg.clone());
+    }
+    let approx = LinearApprox::new(args, 2, &mut fvs, None, None);
+
+    let x = term::val(val::int(4));
+    let argss = vec![x.clone()];
+    let terms = approx.apply(&argss);
+    assert_eq!(terms.len(), 2);
+
+    let coef0 = approx.coef[0][VarIdx::from(0)];
+    let coef1 = approx.coef[1][VarIdx::from(0)];
+    let cnst0 = approx.cnst[VarIdx::from(0)];
+    let cnst1 = approx.cnst[VarIdx::from(1)];
+
+    // Assign concrete values and compare evaluated results.
+    let subst: VarHMap<_> = vec![
+        (coef0, term::val(val::int(2))),
+        (coef1, term::val(val::int(3))),
+        (cnst0, term::val(val::int(5))),
+        (cnst1, term::val(val::int(7))),
+    ]
+    .into_iter()
+    .collect();
+
+    let values: Vec<_> = terms
+        .into_iter()
+        .map(|term| term.subst_total(&subst).unwrap().0.as_val())
+        .collect();
+
+    let expected0 = val::int(5 + 2 * 4);
+    let expected1 = val::int(7 + 3 * 4);
+    assert_eq!(values.len(), 2);
+    assert!(values.contains(&expected0));
+    assert!(values.contains(&expected1));
+}
+
 fn prepare_coefs<S>(
     varname: S,
     variables: &mut VarInfos,
