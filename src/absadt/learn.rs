@@ -383,11 +383,15 @@ impl Enc<Template> {
 
 #[test]
 fn test_linear_approx_apply() {
-    let mut fvs = VarInfos::new();
     // dtyp = Cons(x)
     let mut args = VarInfos::new();
     let idx = VarIdx::from(0);
     args.push(VarInfo::new("x".to_string(), typ::int(), idx));
+    let mut fvs = VarInfos::new();
+    // mimic TemplateInfo behavior: template parameters start after the argument indices
+    for arg in args.iter() {
+        fvs.push(arg.clone());
+    }
     let approx = LinearApprox::new(args, 1, &mut fvs, None, None);
 
     let x = term::val(val::int(4));
