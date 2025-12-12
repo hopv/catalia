@@ -35,68 +35,63 @@ impl TemplateInfo {
     }
 
     fn new_linear_approx(
-        encs: BTreeMap<Typ, Encoder>,
+        encs: &BTreeMap<Typ, Encoder>,
+        n_encs: usize,
         min: Option<i64>,
         max: Option<i64>,
     ) -> TemplateInfo {
-        let mut fvs = VarInfos::new();
-
+        let mut variables = VarInfos::new();
         let mut new_encs = BTreeMap::new();
 
         // prepare LinearApprox for each constructor
-        for (typ, enc) in encs.iter() {
+        for typ in encs.keys() {
             let mut approxs = BTreeMap::new();
             for constr in typ.dtyp_inspect().unwrap().0.news.keys() {
+                // for each constructor, we prepare an approx
                 let (ty, prms) = typ.dtyp_inspect().unwrap();
-                let mut coefs = VarMap::new();
-                // each constructor has a set of selectors
+                // prepare function arguments
+                let mut approx_args = VarInfos::new();
                 for (sel, ty) in ty.selectors_of(constr).unwrap().iter() {
                     let ty = ty.to_type(Some(prms)).unwrap();
-                    let n = match encs.get(&ty) {
-                        Some(enc_for_ty) => {
-                            // prepare template coefficients for all the approximations of the argument
-                            enc_for_ty.n_params + 1
-                        }
-                        None => {
-                            assert!(ty.is_int());
-                            1
-                        }
+                    let n_arg = if encs.get(&ty).is_some() {
+                        n_encs
+                    } else {
+                        assert!(ty.is_int());
+                        1
                     };
-                    let name = format!("{constr}-{sel}");
-                    // prepare coefs for constr-sel, which involes generating new template variables manged
-                    // at the top level (`fvs`)
-                    let args = prepare_coefs(name, &mut fvs, n);
-                    coefs.push(args);
+                    for i in 0..n_arg {
+                        let next_index = variables.next_index();
+                        let info = VarInfo::new(
+                            format!("arg-{}-{}", sel, i),
+                            typ::int(),
+                            next_index,
+                        );
+                        variables.push(info.clone());
+                        approx_args.push(info);
+                    }
                 }
-
-                let mut approx = enc.approxs.get(constr).unwrap().clone();
-                let n_args: usize = coefs
-                    .iter()
-                    .map(|x| x.iter().map(|_| 1).sum::<usize>())
-                    .sum();
-                // insert dummy variables for newly-introduced approximated integers
-                for _ in 0..(n_args - approx.args.len()) {
-                    approx.args.push(VarInfo::new(
-                        format!("tmp-{}", approx.args.next_index()),
-                        typ::int(),
-                        approx.args.next_index(),
-                    ));
-                }
+                // create a LinearApprox
                 approxs.insert(
                     constr.to_string(),
-                    Template::Linear(LinearApprox::new(coefs.into(), &mut fvs, approx, min, max)),
+                    Template::Linear(LinearApprox::new(
+                        approx_args,
+                        n_encs,
+                        &mut variables,
+                        min,
+                        max,
+                    )),
                 );
             }
             let enc = Enc {
                 approxs,
                 typ: typ.clone(),
-                n_params: enc.n_params + 1,
+                n_params: n_encs,
             };
             new_encs.insert(typ.clone(), enc);
         }
 
         TemplateInfo {
-            parameters: fvs,
+            parameters: variables,
             encs: new_encs,
         }
     }
@@ -155,72 +150,6 @@ impl std::fmt::Display for TemplateSchedItem {
     }
 }
 
-impl Approx {
-    fn restrict_approx<I: Iterator<Item = Typ>>(
-        &self,
-        cur_enc: &BTreeMap<Typ, Encoder>,
-        typs: I,
-        n_encs: usize,
-    ) -> Approx {
-        // 1. original signature
-        // 2. append arguments with n_encs
-        // 3. append terms with n_encs
-        let mut new_args = VarInfos::new();
-        for t in typs {
-            match cur_enc.get(&t) {
-                Some(_) => {
-                    for _ in 0..n_encs {
-                        new_args.push(VarInfo::new(
-                            format!("tmp-{}", new_args.next_index()),
-                            typ::int(),
-                            new_args.next_index(),
-                        ));
-                    }
-                }
-                None => {
-                    new_args.push(VarInfo::new(
-                        format!("tmp-{}", new_args.next_index()),
-                        t.clone(),
-                        new_args.next_index(),
-                    ));
-                }
-            }
-        }
-        let new_terms = self.terms.iter().take(n_encs).cloned().collect();
-        Approx {
-            args: new_args.into(),
-            terms: new_terms,
-        }
-    }
-}
-
-impl Encoder {
-    fn restrict_approx(
-        &self,
-        cur_enc: &BTreeMap<Typ, Encoder>,
-        typ: &Typ,
-        n_encs: usize,
-    ) -> Encoder {
-        let (ty, params) = typ.dtyp_inspect().unwrap();
-
-        let mut new_approxs = BTreeMap::new();
-        for (cnstr, args) in ty.news.iter() {
-            let approx = self.approxs.get(cnstr).unwrap();
-            let approx = approx.restrict_approx(
-                cur_enc,
-                args.iter().map(|(_, t)| t.to_type(Some(params)).unwrap()),
-                n_encs,
-            );
-            new_approxs.insert(cnstr.clone(), approx);
-        }
-        Encoder {
-            approxs: new_approxs,
-            typ: self.typ.clone(),
-            n_params: n_encs,
-        }
-    }
-}
-
 impl TemplateScheduler {
     const N_TEMPLATES: usize = 8;
 	
@@ -262,42 +191,25 @@ impl TemplateScheduler {
     fn new(enc: BTreeMap<Typ, Encoder>) -> Self {
         Self { idx: 0, enc }
     }
-
-    fn restrict_approx(&self, n_encs: usize) -> BTreeMap<Typ, Encoder> {
-        self.enc
-            .iter()
-            .map(|(k, enc)| {
-                let enc = enc.restrict_approx(&self.enc, k, n_encs);
-                (k.clone(), enc)
-            })
-            .collect()
-    }
 }
 
 impl std::iter::Iterator for TemplateScheduler {
     type Item = TemplateInfo;
     fn next(&mut self) -> Option<Self::Item> {
-        'a: loop {
+        loop {
             if self.idx >= Self::N_TEMPLATES {
                 return None;
             }
             let next_template = &Self::TEMPLATE_SCHEDULING[self.idx];
             self.idx += 1;
 
-            for (_, v) in self.enc.iter() {
-                // case where the next_template is too large
-                if v.n_params + 1 < next_template.n_encs {
-                    continue 'a;
-                }
-            }
-
-            let enc = self.restrict_approx(next_template.n_encs - 1);
-
             let r = match next_template.typ {
                 TemplateType::BoundLinear { min, max } => {
-                    TemplateInfo::new_linear_approx(enc, Some(min), Some(max))
+                    TemplateInfo::new_linear_approx(&self.enc, next_template.n_encs, Some(min), Some(max))
                 }
-                TemplateType::Linear => TemplateInfo::new_linear_approx(enc, None, None),
+                TemplateType::Linear => {
+                    TemplateInfo::new_linear_approx(&self.enc, next_template.n_encs, None, None)
+                }
             };
             log_info!("Template: {}", next_template);
             break Some(r);
@@ -341,25 +253,27 @@ impl Template {
 struct LinearApprox {
     /// Existing approx
     approx: Approx,
-    // approx template
-    // n_args * num of its approx
-    coef: VarMap<VarMap<VarIdx>>,
-    cnst: VarIdx,
+    // approx template: one coefficient vector per encoded component
+    coef: Vec<VarMap<VarIdx>>,
+    cnst: VarMap<VarIdx>,
     min: Option<i64>,
     max: Option<i64>,
 }
 
 impl Approximation for LinearApprox {
     fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
-        let mut terms = self.approx.apply(arg_terms);
-        let mut res = vec![term::var(self.cnst, typ::int())];
-        let coefs = self.coef.iter().flatten();
-        for (arg, coef) in arg_terms.into_iter().zip(coefs) {
-            let t = term::mul(vec![term::var(*coef, typ::int()), arg.clone()]);
-            res.push(t);
+        let subst_map: VarHMap<_> = self
+            .approx
+            .args
+            .iter()
+            .map(|x| x.idx)
+            .zip(arg_terms.iter().cloned())
+            .collect();
+        let mut res = Vec::with_capacity(self.approx.terms.len());
+        for term in self.approx.terms.iter() {
+            res.push(term.subst(&subst_map).0);
         }
-        terms.push(term::add(res));
-        terms
+        res
     }
 }
 
@@ -369,8 +283,8 @@ impl LinearApprox {
         for c in self
             .coef
             .iter()
-            .flatten()
-            .chain(std::iter::once(&self.cnst))
+            .flat_map(|coefs| coefs.iter())
+            .chain(self.cnst.iter())
         {
             if let Some(min) = self.min {
                 let t = term::le(term::int(min), term::var(*c, typ::int()));
@@ -386,36 +300,65 @@ impl LinearApprox {
         Some(term::and(asserts))
     }
     fn instantiate(&self, model: &Model) -> Approx {
-        let mut approx = self.approx.clone();
-
-        let cnst = &model[self.cnst];
-        let mut terms = vec![term::val(cnst.clone())];
-        for (coef, arg) in self.coef.iter().flatten().zip(approx.args.iter()) {
-            let val = &model[*coef];
-            let val = term::val(val.clone());
-            let var = term::var(arg.idx, arg.typ.clone());
-            terms.push(term::mul(vec![val, var]));
+        let mut subst_map: VarHMap<Term> = VarHMap::new();
+        for cnst in self.cnst.iter() {
+            subst_map.insert(*cnst, term::val(model[*cnst].clone()));
         }
-        let term = term::add(terms);
-        approx.terms.push(term);
+        for coef in self.coef.iter().flatten() {
+            subst_map.insert(*coef, term::val(model[*coef].clone()));
+        }
 
+        let mut approx = self.approx.clone();
+        approx.terms = approx
+            .terms
+            .into_iter()
+            .map(|t| t.subst(&subst_map).0)
+            .collect();
         approx
     }
 }
 impl LinearApprox {
     fn new(
-        coef: VarMap<VarMap<VarIdx>>,
-        fvs: &mut VarInfos,
-        approx: Approx,
+        args: VarInfos,
+        n_encs: usize,
+        variables: &mut VarInfos,
         min: Option<i64>,
         max: Option<i64>,
     ) -> Self {
-        let idx = fvs.next_index();
-        let info = VarInfo::new("const_value".to_string(), typ::int(), idx);
-        fvs.push(info);
+        let mut coef = Vec::with_capacity(n_encs);
+        let mut cnst = VarMap::new();
+        let mut terms = Vec::new();
+        for term_idx in 0..n_encs {
+            // prepare coefficients
+            let name = format!("coef-term-{term_idx}");
+            let coefs = prepare_coefs(name, variables, args.len());
+
+            // create const
+            let const_idx = variables.next_index();
+            let info = VarInfo::new(format!("const-term-{term_idx}"), typ::int(), const_idx);
+            variables.push(info);
+
+            // build term
+            let mut parts = vec![term::var(const_idx, typ::int())];
+            for (coef, arg) in coefs.iter().zip(args.iter()) {
+                let c = term::var(*coef, typ::int());
+                let v = term::var(arg.idx, arg.typ.clone());
+                parts.push(term::mul(vec![c, v]));
+            }
+            terms.push(term::add(parts));
+
+            coef.push(coefs);
+            cnst.push(const_idx);
+        }
+
+        let approx = Approx {
+            args,
+            terms,
+        };
+
         Self {
             coef,
-            cnst: idx,
+            cnst,
             approx,
             min,
             max,
@@ -442,8 +385,10 @@ impl Enc<Template> {
 fn test_linear_approx_apply() {
     let mut fvs = VarInfos::new();
     // dtyp = Cons(x)
-    let coef = prepare_coefs("dtyp-cons", &mut fvs, 1);
-    let approx = LinearApprox::new(vec![coef].into(), &mut fvs, Approx::empty(), None, None);
+    let mut args = VarInfos::new();
+    let idx = VarIdx::from(0);
+    args.push(VarInfo::new("x".to_string(), typ::int(), idx));
+    let approx = LinearApprox::new(args, 1, &mut fvs, None, None);
 
     let x = term::val(val::int(4));
     let argss = vec![x.clone()];
@@ -452,17 +397,21 @@ fn test_linear_approx_apply() {
     assert_eq!(t.len(), 1);
     let t = t.remove(0);
 
+    let coef_idx = approx.coef[0][VarIdx::from(0)];
+    let cnst_idx = approx.cnst[VarIdx::from(0)];
     let t2 = term::add(vec![
-        term::var(1, typ::int()),
-        term::mul(vec![term::var(0, typ::int()), x.clone()]),
+        term::var(cnst_idx, typ::int()),
+        term::mul(vec![term::var(coef_idx, typ::int()), x.clone()]),
     ]);
     println!("t: {}", t);
     println!("t2: {}", t2);
     for (a, b) in [(4i64, 3i64), (1, 2), (-4, 0)].into_iter() {
-        let subst: VarHMap<_> = (0..2)
-            .map(|x| VarIdx::from(x))
-            .zip(vec![term::val(val::int(a)), term::val(val::int(b))].into_iter())
-            .collect();
+        let subst: VarHMap<_> = vec![
+            (coef_idx, term::val(val::int(a))),
+            (cnst_idx, term::val(val::int(b))),
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
             t.subst_total(&subst).unwrap().0.as_val(),
             t2.subst_total(&subst).unwrap().0.as_val()
@@ -470,17 +419,21 @@ fn test_linear_approx_apply() {
     }
 }
 
-fn prepare_coefs<S>(varname: S, fvs: &mut VarInfos, n: usize) -> VarMap<VarIdx>
+fn prepare_coefs<S>(
+    varname: S,
+    variables: &mut VarInfos,
+    n: usize,
+) -> VarMap<VarIdx>
 where
     S: AsRef<str>,
 {
     let varname = varname.as_ref();
     let mut res = VarMap::new();
     for i in 0..n {
-        let idx = fvs.next_index();
+        let idx = VarIdx::from(variables.next_index());
         let info = VarInfo::new(format!("{varname}-{i}"), typ::int(), idx);
         res.push(idx);
-        fvs.push(info);
+        variables.push(info);
     }
     res
 }
