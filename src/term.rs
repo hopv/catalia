@@ -1777,6 +1777,31 @@ impl RTerm {
     pub fn subst_total<Map: VarIndexed<Term>>(&self, map: &Map) -> Option<(Term, bool)> {
         self.subst_custom(map, true)
     }
+
+    /// Returns free variables in the term.
+    ///
+    /// ``` rust
+    /// # use hoice::common::*;
+    /// let x = term::int_var(0);
+    /// let y = term::int_var(1);
+    /// let t = term::add(vec![ x.clone(), term::cmul(2, y.clone()) ]);
+    /// # println!("{}", t);
+    /// let free_vars = t.free_vars();
+    /// let mut expected = VarSet::new();
+    /// expected.insert(0.into());
+    /// expected.insert(1.into());
+    /// assert_eq! { free_vars, expected }
+    ///
+    /// ```
+    pub fn free_vars(&self) -> VarSet {
+        let mut vars = VarSet::new();
+        self.iter(|term| {
+            if let RTerm::Var(_, var) = term {
+                vars.insert(*var);
+            }
+        });
+        vars
+    }
 }
 
 /// Fold/map/zip functions.
