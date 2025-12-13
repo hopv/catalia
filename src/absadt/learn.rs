@@ -499,7 +499,7 @@ fn test_linear_approx_apply_two_terms() {
 }
 
 #[test]
-fn test_solve_by_blasting_internal_finds_model() {
+fn test_solve_by_blasting_finds_model() {
     let mut parameters = VarInfos::new();
     let x_idx = parameters.next_index();
     parameters.push(VarInfo::new("x".to_string(), typ::int(), x_idx));
@@ -525,7 +525,7 @@ fn test_solve_by_blasting_internal_finds_model() {
     fvs.insert(x_idx);
     fvs.insert(y_idx);
 
-    let model = solve_by_blasting_internal(&form, &template_info, &fvs, -1, 1)
+    let model = solve_by_blasting(&form, &template_info, &fvs, -1, 1)
         .expect("blasting should succeed")
         .expect("formula should be satisfiable");
 
@@ -542,7 +542,7 @@ fn test_solve_by_blasting_internal_finds_model() {
 }
 
 #[test]
-fn test_solve_by_blasting_internal_unsat() {
+fn test_solve_by_blasting_unsat() {
     let mut parameters = VarInfos::new();
     let x_idx = parameters.next_index();
     parameters.push(VarInfo::new("x".to_string(), typ::int(), x_idx));
@@ -562,9 +562,34 @@ fn test_solve_by_blasting_internal_unsat() {
     fvs.insert(x_idx);
     fvs.insert(y_idx);
 
-    let model = solve_by_blasting_internal(&form, &template_info, &fvs, -1, 1)
+    let model = solve_by_blasting(&form, &template_info, &fvs, -1, 1)
         .expect("blasting should not error");
     assert!(model.is_none());
+}
+
+#[test]
+fn test_solve_by_blasting_prioritizes_zero() {
+    let mut parameters = VarInfos::new();
+    let x_idx = parameters.next_index();
+    parameters.push(VarInfo::new("x".to_string(), typ::int(), x_idx));
+
+    let template_info = TemplateInfo {
+        parameters,
+        encs: BTreeMap::new(),
+    };
+
+    let x = term::var(x_idx, typ::int());
+    let form = term::or(vec![term::eq(x.clone(), term::int(-1)), term::eq(x.clone(), term::int(0))]);
+
+    let mut fvs = VarSet::new();
+    fvs.insert(x_idx);
+
+    let model = solve_by_blasting(&form, &template_info, &fvs, -1, 1)
+        .expect("blasting should not error")
+        .expect("formula should be satisfiable");
+
+    let val = model[x_idx].to_int().unwrap().unwrap();
+    assert_eq!(val, 0.into());
 }
 
 fn prepare_coefs<S>(
@@ -586,7 +611,7 @@ where
     res
 }
 
-fn solve_by_blasting_internal(
+fn solve_by_blasting(
     form: &term::Term,
     template_info: &TemplateInfo,
     fvs: &VarSet,
@@ -596,6 +621,7 @@ fn solve_by_blasting_internal(
     if min > max {
         return Ok(None);
     }
+
     let vars: Vec<_> = fvs.iter().copied().collect();
 
     let mut model: VarMap<Val> = template_info
@@ -621,7 +647,17 @@ fn solve_by_blasting_internal(
 
         let var = vars[depth];
         let prev = model[var].clone();
-        for value in min..=max {
+        let zero_first = min <= 0 && max >= 0;
+        if zero_first {
+            model[var] = val::int(0);
+            if let Some(res) = search(form, vars, depth + 1, min, max, model)? {
+                return Ok(Some(res));
+            }
+        }
+        for value in (min..=max).rev() {
+            if zero_first && value == 0 {
+                continue;
+            }
             model[var] = val::int(value);
             if let Some(res) = search(form, vars, depth + 1, min, max, model)? {
                 return Ok(Some(res));
@@ -698,17 +734,6 @@ impl<'a> LearnCtx<'a> {
         Ok(Some(cex))
     }
 
-    fn solve_by_blasting(&self,
-        form: &term::Term,
-        template_info: &TemplateInfo,
-        fvs: &VarSet,
-        min: i64,
-        max: i64,
-    ) -> Res<Option<Model>> {
-        let _ = self;
-        solve_by_blasting_internal(form, template_info, fvs, min, max)
-    }
-
     fn get_template_model(
         &mut self,
         form: &term::Term,
@@ -717,7 +742,7 @@ impl<'a> LearnCtx<'a> {
         let fvs = form.free_vars();
         if let Some((min, max)) = template_info.param_range() {
             if fvs.len() <= THRESHOLD_BLASTING && max - min + 1 <= THRESHOLD_BLASTING_MAX_RANGE {
-                return self.solve_by_blasting(form, &template_info, &fvs, min, max)
+                return solve_by_blasting(form, template_info, &fvs, min, max)
             }
         }
         self.solver.reset()?;
