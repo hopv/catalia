@@ -4,6 +4,8 @@ use crate::common::{smt::FullParser as Parser, Cex as Model, *};
 use crate::info::VarInfo;
 
 const CONSTRAINT_CHECK_TIMEOUT: usize = 1;
+const THRESHOLD_BLASTING: usize = 10;
+const THRESHOLD_BLASTING_MAX_RANGE: i64 = 3;
 
 struct TemplateInfo {
     parameters: VarInfos,
@@ -113,6 +115,24 @@ impl TemplateInfo {
             }
         }
         Some(asserts)
+    }
+
+    fn param_range(&self) -> Option<(i64, i64)> {
+        let mut overall_min = i64::MAX;
+        let mut overall_max = i64::MIN;
+        for enc in self.encs.values() {
+            for approx in enc.approxs.values() {
+                let (min, max) = approx.param_range()?;
+                if min < overall_min {
+                    overall_min = min;
+                }
+                if max > overall_max {
+                    overall_max = max;
+                }
+            }
+        }
+        assert!(overall_min <= overall_max);
+        Some((overall_min, overall_max))
     }
 }
 
@@ -246,6 +266,17 @@ impl Template {
     fn constraint(&self) -> Option<Term> {
         match self {
             Template::Linear(approx) => approx.constraint(),
+        }
+    }
+    fn param_range(&self) -> Option<(i64, i64)> {
+        match self {
+            Template::Linear(approx) => {
+                if let (Some(min), Some(max)) = (approx.min, approx.max) {
+                    Some((min, max))
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -467,6 +498,75 @@ fn test_linear_approx_apply_two_terms() {
     assert!(values.contains(&expected1));
 }
 
+#[test]
+fn test_solve_by_blasting_internal_finds_model() {
+    let mut parameters = VarInfos::new();
+    let x_idx = parameters.next_index();
+    parameters.push(VarInfo::new("x".to_string(), typ::int(), x_idx));
+    let y_idx = parameters.next_index();
+    parameters.push(VarInfo::new("y".to_string(), typ::int(), y_idx));
+
+    let template_info = TemplateInfo {
+        parameters,
+        encs: BTreeMap::new(),
+    };
+
+    let x = term::var(x_idx, typ::int());
+    let y = term::var(y_idx, typ::int());
+    let form = term::and(vec![
+        term::ge(x.clone(), term::int(-1)),
+        term::le(x.clone(), term::int(1)),
+        term::ge(y.clone(), term::int(-1)),
+        term::le(y.clone(), term::int(1)),
+        term::eq(term::add(vec![x.clone(), y.clone()]), term::int(1)),
+    ]);
+
+    let mut fvs = VarSet::new();
+    fvs.insert(x_idx);
+    fvs.insert(y_idx);
+
+    let model = solve_by_blasting_internal(&form, &template_info, &fvs, -1, 1)
+        .expect("blasting should succeed")
+        .expect("formula should be satisfiable");
+
+    let x_val = model[x_idx].to_int().unwrap().unwrap();
+    let y_val = model[y_idx].to_int().unwrap().unwrap();
+
+    let lower: Int = (-1).into();
+    let upper: Int = 1.into();
+    assert!(x_val >= lower && x_val <= upper);
+    assert!(y_val >= lower && y_val <= upper);
+
+    let sum = x_val + y_val;
+    assert_eq!(sum, 1.into());
+}
+
+#[test]
+fn test_solve_by_blasting_internal_unsat() {
+    let mut parameters = VarInfos::new();
+    let x_idx = parameters.next_index();
+    parameters.push(VarInfo::new("x".to_string(), typ::int(), x_idx));
+    let y_idx = parameters.next_index();
+    parameters.push(VarInfo::new("y".to_string(), typ::int(), y_idx));
+
+    let template_info = TemplateInfo {
+        parameters,
+        encs: BTreeMap::new(),
+    };
+
+    let x = term::var(x_idx, typ::int());
+    let y = term::var(y_idx, typ::int());
+    let form = term::eq(term::add(vec![x.clone(), y.clone()]), term::int(5));
+
+    let mut fvs = VarSet::new();
+    fvs.insert(x_idx);
+    fvs.insert(y_idx);
+
+    let model = solve_by_blasting_internal(&form, &template_info, &fvs, -1, 1)
+        .expect("blasting should not error");
+    assert!(model.is_none());
+}
+
 fn prepare_coefs<S>(
     varname: S,
     variables: &mut VarInfos,
@@ -484,6 +584,54 @@ where
         variables.push(info);
     }
     res
+}
+
+fn solve_by_blasting_internal(
+    form: &term::Term,
+    template_info: &TemplateInfo,
+    fvs: &VarSet,
+    min: i64,
+    max: i64,
+) -> Res<Option<Model>> {
+    if min > max {
+        return Ok(None);
+    }
+    let vars: Vec<_> = fvs.iter().copied().collect();
+
+    let mut model: VarMap<Val> = template_info
+        .parameters
+        .iter()
+        .map(|info| info.typ.default_val())
+        .collect();
+
+    fn search(
+        form: &term::Term,
+        vars: &[VarIdx],
+        depth: usize,
+        min: i64,
+        max: i64,
+        model: &mut VarMap<Val>,
+    ) -> Res<Option<Model>> {
+        if depth == vars.len() {
+            return match form.bool_eval(model)? {
+                Some(true) => Ok(Some(Model::from(model.clone()))),
+                _ => Ok(None),
+            };
+        }
+
+        let var = vars[depth];
+        let prev = model[var].clone();
+        for value in min..=max {
+            model[var] = val::int(value);
+            if let Some(res) = search(form, vars, depth + 1, min, max, model)? {
+                return Ok(Some(res));
+            }
+        }
+        model[var] = prev;
+        Ok(None)
+    }
+
+    search(form, &vars, 0, min, max, &mut model)
 }
 
 impl<'a> LearnCtx<'a> {
@@ -550,11 +698,28 @@ impl<'a> LearnCtx<'a> {
         Ok(Some(cex))
     }
 
+    fn solve_by_blasting(&self,
+        form: &term::Term,
+        template_info: &TemplateInfo,
+        fvs: &VarSet,
+        min: i64,
+        max: i64,
+    ) -> Res<Option<Model>> {
+        let _ = self;
+        solve_by_blasting_internal(form, template_info, fvs, min, max)
+    }
+
     fn get_template_model(
         &mut self,
         form: &term::Term,
         template_info: &TemplateInfo,
     ) -> Res<Option<Model>> {
+        let fvs = form.free_vars();
+        if let Some((min, max)) = template_info.param_range() {
+            if fvs.len() <= THRESHOLD_BLASTING && max - min + 1 <= THRESHOLD_BLASTING_MAX_RANGE {
+                return self.solve_by_blasting(form, &template_info, &fvs, min, max)
+            }
+        }
         self.solver.reset()?;
         self.solver.set_option(":timeout", "4294967295")?;
         template_info.define_parameters(&mut self.solver)?;
