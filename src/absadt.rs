@@ -462,7 +462,7 @@ impl<'a> AbsConf<'a> {
                 format!(
                     "encoder_pred_{}",
                     enc::to_valid_symbol(typ.to_string()),
-				),
+                ),
                 pi,
                 vec![typ.clone()].into(),
             );
