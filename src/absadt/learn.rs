@@ -187,7 +187,7 @@ impl std::fmt::Display for TemplateSchedItem {
 impl TemplateScheduler {
     const N_TEMPLATES: usize = 10;
 
-    const TEMPLATE_SCHDEDULING: [TemplateSchedItem; Self::N_TEMPLATES] = [
+    const TEMPLATE_SCHEDULING: [TemplateSchedItem; Self::N_TEMPLATES] = [
         TemplateSchedItem {
             n_encs: 1,
             typ: TemplateType::BoundLinear { min: -1, max: 1 },
