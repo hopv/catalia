@@ -1192,16 +1192,17 @@ impl<'a> AbsInstance<'a> {
     /// Returns () when it's sat, and a counterexample when it's unsat
     pub fn check_sat(&self) -> Res<either::Either<(), CallTree>> {
         // since eld seems better, we first try eld with timeout
-        let b = super::chc_solver::portfolio(self)
-            .map(|x| x.is_left())
-            .map_err(|e| log_info!("Portfolio solver failed with {}", e))
-            .unwrap_or(false);
+        let (b, eldarica_error) = super::chc_solver::portfolio(self)?
+            .either(
+                |_| (true, None),
+                |(_, eld_err)| (false, eld_err)
+            );
         if b {
             return Ok(either::Left(()));
         }
 
         // Use Eldarica or Spacer for counterexample generation based on config
-        let res = if conf.use_eldarica_cex {
+        let res = if conf.use_eldarica_cex && eldarica_error.is_none() {
             log_debug!("Using Eldarica for counterexample generation");
             super::chc_solver::run_eldarica_cex(self, None)?
         } else {
