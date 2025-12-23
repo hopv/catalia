@@ -41,6 +41,7 @@ impl TemplateInfo {
         n_encs: usize,
         min: Option<i64>,
         max: Option<i64>,
+        structured: bool,
     ) -> TemplateInfo {
         let mut variables = VarInfos::new();
         let mut new_encs = BTreeMap::new();
@@ -53,14 +54,14 @@ impl TemplateInfo {
                 let (ty, prms) = typ.dtyp_inspect().unwrap();
                 // prepare function arguments
                 let mut approx_args = VarInfos::new();
+                let mut arg_components: Vec<Option<usize>> = Vec::new();
                 for (sel, ty) in ty.selectors_of(constr).unwrap().iter() {
                     let ty = ty.to_type(Some(prms)).unwrap();
-                    let n_arg = if encs.get(&ty).is_some() {
-                        n_encs
-                    } else {
+                    let is_recursive = encs.get(&ty).is_some();
+                    let n_arg = if is_recursive { n_encs } else { 1 };
+                    if !is_recursive {
                         assert!(ty.is_int());
-                        1
-                    };
+                    }
                     for i in 0..n_arg {
                         let next_index = variables.next_index();
                         let info = VarInfo::new(
@@ -70,6 +71,11 @@ impl TemplateInfo {
                         );
                         variables.push(info.clone());
                         approx_args.push(info);
+                        if is_recursive {
+                            arg_components.push(Some(i));
+                        } else {
+                            arg_components.push(None);
+                        }
                     }
                 }
                 // create a LinearApprox
@@ -81,6 +87,8 @@ impl TemplateInfo {
                         &mut variables,
                         min,
                         max,
+                        arg_components,
+                        structured,
                     )),
                 );
             }
@@ -145,7 +153,9 @@ struct TemplateScheduler {
     enc: BTreeMap<Typ, Encoder>,
 }
 
+#[derive(Clone, Copy)]
 enum TemplateType {
+    BoundStructuredLinear { min: i64, max: i64 },
     BoundLinear { min: i64, max: i64 },
     Linear,
 }
@@ -153,12 +163,16 @@ enum TemplateType {
 impl std::fmt::Display for TemplateType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            TemplateType::BoundStructuredLinear { min, max } => {
+                write!(f, "BoundStructuredLinear({}, {})", min, max)
+            }
             TemplateType::BoundLinear { min, max } => write!(f, "BoundLinear({}, {})", min, max),
             TemplateType::Linear => write!(f, "Linear"),
         }
     }
 }
 
+#[derive(Clone, Copy)]
 struct TemplateSchedItem {
     n_encs: usize,
     typ: TemplateType,
@@ -171,8 +185,8 @@ impl std::fmt::Display for TemplateSchedItem {
 }
 
 impl TemplateScheduler {
-    const N_TEMPLATES: usize = 8;
-	
+    const N_TEMPLATES: usize = 10;
+
     const TEMPLATE_SCHEDULING: [TemplateSchedItem; Self::N_TEMPLATES] = [
         TemplateSchedItem {
             n_encs: 1,
@@ -180,7 +194,15 @@ impl TemplateScheduler {
         },
         TemplateSchedItem {
             n_encs: 2,
+            typ: TemplateType::BoundStructuredLinear { min: -1, max: 1 },
+        },
+        TemplateSchedItem {
+            n_encs: 2,
             typ: TemplateType::BoundLinear { min: -1, max: 1 },
+        },
+        TemplateSchedItem {
+            n_encs: 3,
+            typ: TemplateType::BoundStructuredLinear { min: -1, max: 1 },
         },
         TemplateSchedItem {
             n_encs: 3,
@@ -224,11 +246,24 @@ impl std::iter::Iterator for TemplateScheduler {
             self.idx += 1;
 
             let r = match next_template.typ {
+                TemplateType::BoundStructuredLinear { min, max } => TemplateInfo::new_linear_approx(
+                    &self.enc,
+                    next_template.n_encs,
+                    Some(min),
+                    Some(max),
+                    true,
+                ),
                 TemplateType::BoundLinear { min, max } => {
-                    TemplateInfo::new_linear_approx(&self.enc, next_template.n_encs, Some(min), Some(max))
+                    TemplateInfo::new_linear_approx(
+                        &self.enc,
+                        next_template.n_encs,
+                        Some(min),
+                        Some(max),
+                        false,
+                    )
                 }
                 TemplateType::Linear => {
-                    TemplateInfo::new_linear_approx(&self.enc, next_template.n_encs, None, None)
+                    TemplateInfo::new_linear_approx(&self.enc, next_template.n_encs, None, None, false)
                 }
             };
             log_info!("Template: {}", next_template);
@@ -285,10 +320,12 @@ struct LinearApprox {
     /// Existing approx
     approx: Approx,
     // approx template: one coefficient vector per encoded component
-    coef: Vec<VarMap<VarIdx>>,
+    coef: Vec<VarMap<Option<VarIdx>>>,
     cnst: VarMap<VarIdx>,
     min: Option<i64>,
     max: Option<i64>,
+    arg_components: Vec<Option<usize>>,
+    enforce_recursive_dependency: bool,
 }
 
 impl Approximation for LinearApprox {
@@ -314,17 +351,37 @@ impl LinearApprox {
         for c in self
             .coef
             .iter()
-            .flat_map(|coefs| coefs.iter())
-            .chain(self.cnst.iter())
+            .flat_map(|coefs| coefs.iter().filter_map(|c| *c))
+            .chain(self.cnst.iter().copied())
         {
             if let Some(min) = self.min {
-                let t = term::le(term::int(min), term::var(*c, typ::int()));
+                let t = term::le(term::int(min), term::var(c, typ::int()));
                 asserts.push(t);
             }
 
             if let Some(max) = self.max {
-                let t = term::le(term::var(*c, typ::int()), term::int(max));
+                let t = term::le(term::var(c, typ::int()), term::int(max));
                 asserts.push(t);
+            }
+        }
+
+        if self.enforce_recursive_dependency {
+            for (term_idx, coefs) in self.coef.iter().enumerate() {
+                let mut relevant = Vec::new();
+                for (arg_pos, comp) in self.arg_components.iter().enumerate() {
+                    if *comp != Some(term_idx) {
+                        continue;
+                    }
+                    if let Some(coef) = coefs[VarIdx::from(arg_pos)] {
+                        relevant.push(term::not(term::eq(
+                            term::var(coef, typ::int()),
+                            term::int_zero(),
+                        )));
+                    }
+                }
+                if !relevant.is_empty() {
+                    asserts.push(term::or(relevant));
+                }
             }
         }
 
@@ -335,8 +392,8 @@ impl LinearApprox {
         for cnst in self.cnst.iter() {
             subst_map.insert(*cnst, term::val(model[*cnst].clone()));
         }
-        for coef in self.coef.iter().flatten() {
-            subst_map.insert(*coef, term::val(model[*coef].clone()));
+        for coef in self.coef.iter().flat_map(|coefs| coefs.iter().filter_map(|c| *c)) {
+            subst_map.insert(coef, term::val(model[coef].clone()));
         }
 
         let mut approx = self.approx.clone();
@@ -355,14 +412,40 @@ impl LinearApprox {
         variables: &mut VarInfos,
         min: Option<i64>,
         max: Option<i64>,
+        arg_components: Vec<Option<usize>>,
+        structured: bool,
     ) -> Self {
+        debug_assert_eq!(args.len(), arg_components.len());
+        let structured = structured && n_encs > 1;
+
         let mut coef = Vec::with_capacity(n_encs);
         let mut cnst = VarMap::new();
         let mut terms = Vec::new();
+        let enforce_recursive_dependency = structured;
         for term_idx in 0..n_encs {
             // prepare coefficients
-            let name = format!("coef-term-{term_idx}");
-            let coefs = prepare_coefs(name, variables, args.len());
+            let varname = format!("coef-term-{term_idx}");
+            let mut coefs: VarMap<Option<VarIdx>> = VarMap::new();
+            for (arg_pos, arg_comp) in arg_components.iter().enumerate() {
+                let allow = if structured {
+                    match arg_comp {
+                        // base arguments are always allowed
+                        None => true,
+                        // recursive arguments are only allowed on the diagonal
+                        Some(c) => *c == term_idx,
+                    }
+                } else {
+                    true
+                };
+                if allow {
+                    let idx = variables.next_index();
+                    let info = VarInfo::new(format!("{varname}-{arg_pos}"), typ::int(), idx);
+                    variables.push(info);
+                    coefs.push(Some(idx));
+                } else {
+                    coefs.push(None);
+                }
+            }
 
             // create const
             let const_idx = variables.next_index();
@@ -372,9 +455,11 @@ impl LinearApprox {
             // build term
             let mut parts = vec![term::var(const_idx, typ::int())];
             for (coef, arg) in coefs.iter().zip(args.iter()) {
-                let c = term::var(*coef, typ::int());
-                let v = term::var(arg.idx, arg.typ.clone());
-                parts.push(term::mul(vec![c, v]));
+                if let Some(coef) = coef {
+                    let c = term::var(*coef, typ::int());
+                    let v = term::var(arg.idx, arg.typ.clone());
+                    parts.push(term::mul(vec![c, v]));
+                }
             }
             terms.push(term::add(parts));
 
@@ -393,6 +478,8 @@ impl LinearApprox {
             approx,
             min,
             max,
+            arg_components,
+            enforce_recursive_dependency,
         }
     }
 }
@@ -423,7 +510,7 @@ fn test_linear_approx_apply() {
     for arg in args.iter() {
         fvs.push(arg.clone());
     }
-    let approx = LinearApprox::new(args, 1, &mut fvs, None, None);
+    let approx = LinearApprox::new(args, 1, &mut fvs, None, None, vec![None], false);
 
     let x = term::val(val::int(4));
     let argss = vec![x.clone()];
@@ -432,7 +519,7 @@ fn test_linear_approx_apply() {
     assert_eq!(t.len(), 1);
     let t = t.remove(0);
 
-    let coef_idx = approx.coef[0][VarIdx::from(0)];
+    let coef_idx = approx.coef[0][VarIdx::from(0)].unwrap();
     let cnst_idx = approx.cnst[VarIdx::from(0)];
     let t2 = term::add(vec![
         term::var(cnst_idx, typ::int()),
@@ -464,15 +551,15 @@ fn test_linear_approx_apply_two_terms() {
     for arg in args.iter() {
         fvs.push(arg.clone());
     }
-    let approx = LinearApprox::new(args, 2, &mut fvs, None, None);
+    let approx = LinearApprox::new(args, 2, &mut fvs, None, None, vec![None], false);
 
     let x = term::val(val::int(4));
     let argss = vec![x.clone()];
     let terms = approx.apply(&argss);
     assert_eq!(terms.len(), 2);
 
-    let coef0 = approx.coef[0][VarIdx::from(0)];
-    let coef1 = approx.coef[1][VarIdx::from(0)];
+    let coef0 = approx.coef[0][VarIdx::from(0)].unwrap();
+    let coef1 = approx.coef[1][VarIdx::from(0)].unwrap();
     let cnst0 = approx.cnst[VarIdx::from(0)];
     let cnst1 = approx.cnst[VarIdx::from(1)];
 
@@ -590,25 +677,6 @@ fn test_solve_by_blasting_prioritizes_zero() {
 
     let val = model[x_idx].to_int().unwrap().unwrap();
     assert_eq!(val, 0.into());
-}
-
-fn prepare_coefs<S>(
-    varname: S,
-    variables: &mut VarInfos,
-    n: usize,
-) -> VarMap<VarIdx>
-where
-    S: AsRef<str>,
-{
-    let varname = varname.as_ref();
-    let mut res = VarMap::new();
-    for i in 0..n {
-        let idx = variables.next_index();
-        let info = VarInfo::new(format!("{varname}-{i}"), typ::int(), idx);
-        res.push(idx);
-        variables.push(info);
-    }
-    res
 }
 
 fn solve_by_blasting(
