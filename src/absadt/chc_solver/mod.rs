@@ -45,18 +45,23 @@ pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), hyper_res::Resolutio
 where
     I: Instance,
 {
-    let b = run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false)
-        .map_err(|e| log_info!("Eldarica failed with {}", e))
-        .unwrap_or(false);
-    if b {
-        return Ok(either::Left(()));
+    if !conf.no_eldarica {
+        let b = run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false)
+            .map_err(|e| log_info!("Eldarica failed with {}", e))
+            .unwrap_or(false);
+        if b {
+            return Ok(either::Left(()));
+        }
     }
 
-    run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false).map(|b| {
+    if !conf.no_hoice {
+        let b = run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false)
+            .map_err(|e| log_info!("Hoice failed with {}", e))
+            .unwrap_or(false);
         if b {
-            either::Left(())
-        } else {
-            either::Right(hyper_res::ResolutionProof::new())
+            return Ok(either::Left(()));
         }
-    })
+    }
+
+    Ok(either::Right(hyper_res::ResolutionProof::new()))
 }

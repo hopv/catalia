@@ -1156,6 +1156,10 @@ pub struct Config {
     pub check_simpl: bool,
     /// Level of term simplification.
     pub term_simpl: usize,
+    /// Disable hoice in the Catalia portfolio solver.
+    pub no_hoice: bool,
+    /// Disable eldarica in the Catalia portfolio solver.
+    pub no_eldarica: bool,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1302,6 +1306,9 @@ impl Config {
         // Timeout.
         let term_simpl = int_of_matches(&matches, "term_simpl");
 
+        let no_hoice = matches.is_present("no_hoice");
+        let no_eldarica = matches.is_present("no_eldarica");
+
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
@@ -1327,6 +1334,8 @@ impl Config {
             check_eld,
             check_simpl,
             term_simpl,
+            no_hoice,
+            no_eldarica,
             instance,
             preproc,
             solver,
@@ -1481,6 +1490,20 @@ impl Config {
                     .value_parser(clap::value_parser!(String))
                     .number_of_values(1)
                     .multiple_occurrences(false)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("no_hoice")
+                    .long("--no-hoice")
+                    .help("disable hoice in the Catalia portfolio solver")
+                    .takes_value(false)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("no_eldarica")
+                    .long("--no-eldarica")
+                    .help("disable eldarica in the Catalia portfolio solver")
+                    .takes_value(false)
                     .display_order(order()),
             )
     }
