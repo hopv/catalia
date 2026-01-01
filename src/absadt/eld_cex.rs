@@ -1,7 +1,7 @@
 //! Parse Eldarica counterexample format
 //!
 //! Eldarica's `-cex` option produces counterexamples in the following format:
-//! ```
+//! ```text
 //! 0: FALSE -> 1, 6, 2, 12, 16
 //! 1: tag!4
 //! 2: lt(1, 0, 0) -> 3, 4, 11, 12, 21, 13, 14, 15
