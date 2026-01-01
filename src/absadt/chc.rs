@@ -689,6 +689,14 @@ impl fmt::Display for CallTree {
     }
 }
 
+/// Check if a node is a root node (query clause)
+///
+/// For Spacer, root nodes have heads starting with "query!"
+/// For Eldarica, the root node has head "FALSE"
+fn is_root_node(head: &str) -> bool {
+    head.starts_with("query!") || head == "FALSE"
+}
+
 /// Transform a resolution proof to a call tree
 ///
 /// 1. Find the tag nodes in the refutation tree
@@ -718,11 +726,17 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
         let id = n.id;
         match Node::tr_from_hyper_res(n, &map) {
             Some(node) => {
+                // For Eldarica, the root node (FALSE) also has a tag and gets transformed
+                // We need to identify it as a root
+                if is_root_node(&n.head) {
+                    roots.push(id);
+                }
                 let r = nodes.insert(id, node);
                 assert!(r.is_none())
             }
             None => {
-                if roots.len() > 0 || !n.head.starts_with("query!") {
+                // For Spacer, the query node doesn't have a tag
+                if roots.len() > 0 || !is_root_node(&n.head) {
                     // case where there are multiple entries
                     bail!("hyper resolution is ill-structured")
                 }
@@ -1006,7 +1020,7 @@ impl<'a> AbsInstance<'a> {
     }
 
     /// Check satisfiability of the query
-    /// Returns () when it' sat, and a counterexample when it's unsat
+    /// Returns () when it's sat, and a counterexample when it's unsat
     pub fn check_sat(&self) -> Res<either::Either<(), CallTree>> {
         // since eld seems better, we first try eld with timeout
         let b = super::chc_solver::portfolio(self)
@@ -1016,7 +1030,16 @@ impl<'a> AbsInstance<'a> {
         if b {
             return Ok(either::Left(()));
         }
-        let res = super::chc_solver::run_spacer(self)?;
+
+        // Use Eldarica or Spacer for counterexample generation based on config
+        let res = if conf.use_eldarica_cex {
+            log_debug!("Using Eldarica for counterexample generation");
+            super::chc_solver::run_eldarica_cex(self, None)?
+        } else {
+            log_debug!("Using Spacer for counterexample generation");
+            super::chc_solver::run_spacer(self)?
+        };
+
         match res {
             either::Left(_) => Ok(either::Left(())),
             either::Right(proof) => {

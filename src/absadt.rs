@@ -48,6 +48,7 @@ use crate::unsat_core::UnsatRes;
 mod catamorphism_parser;
 mod chc;
 mod chc_solver;
+mod eld_cex;
 mod enc;
 mod hyper_res;
 mod learn;
@@ -158,7 +159,7 @@ impl<'original> AbsConf<'original> {
         let mut file = self
             .instance
             .instance_log_files(format!("encoded-epoch-{}", self.epoch))?;
-        e.dump_as_smt2(&mut file, &encoder_s, false)?;
+        e.dump_as_smt2(&mut file, &encoder_s, true)?;
         Ok(())
     }
 

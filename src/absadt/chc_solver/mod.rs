@@ -4,7 +4,7 @@ mod spacer;
 
 use crate::absadt::hyper_res;
 use crate::common::*;
-pub use eld::run_eldarica;
+pub use eld::{run_eldarica, run_eldarica_cex};
 pub use hoice::run_hoice;
 pub use spacer::run_spacer;
 
