@@ -13,6 +13,10 @@ static sat_files_dir: &str = "rsc/sat";
 static unsat_files_dir: &str = "rsc/unsat";
 static err_files_dir: &str = "rsc/error";
 
+// ADT test directories
+static adts_sat_dir: &str = "adts/sat";
+static adts_unsat_dir: &str = "adts/unsat";
+
 macro_rules! run {
     ($f:expr) => {
         if let Err(e) = $f {
@@ -169,6 +173,89 @@ fn run_unsat() -> Res<()> {
             file_name
         )
         .is_file()
+        {
+            println!("looking at `{}`", file_name);
+            let file = OpenOptions::new()
+                .read(true)
+                .open(entry.path())
+                .chain_err(|| format!("while opening file {}", file_name))?;
+            let (model, instance) = read_and_work(file, None, true, true, true)?;
+            if let Some(model) = model {
+                println!("sat");
+                instance.write_model(&model, &mut ::std::io::stdout())?;
+                println!("");
+                return Err(format!("got sat on `{}`, expected unsat", file_name).into());
+            } else {
+                println!("- is okay")
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// ADT (Catalia) Tests
+// ============================================================================
+
+#[test]
+fn adts_sat() {
+    run!(run_adts_sat())
+}
+
+#[test]
+fn adts_unsat() {
+    run!(run_adts_unsat())
+}
+
+fn run_adts_sat() -> Res<()> {
+    let files = match read_dir(adts_sat_dir) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Skipping ADT sat tests: {} ({})", adts_sat_dir, e);
+            return Ok(());
+        }
+    };
+
+    for entry in files {
+        let entry = map_err!(entry, "while reading entry");
+        let file_name = format!("{}", entry.file_name().to_string_lossy());
+        if !file_name.starts_with("no-test-")
+            && file_name.ends_with(".smt2")
+            && map_err!(
+                entry.file_type(),
+                "while reading entry (file type of `{}`)",
+                file_name
+            )
+            .is_file()
+        {
+            run_sat_on(&entry.path())?
+        }
+    }
+
+    Ok(())
+}
+
+fn run_adts_unsat() -> Res<()> {
+    let files = match read_dir(adts_unsat_dir) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Skipping ADT unsat tests: {} ({})", adts_unsat_dir, e);
+            return Ok(());
+        }
+    };
+
+    for entry in files {
+        let entry = map_err!(entry, "while reading entry");
+        let file_name = format!("{}", entry.file_name().to_string_lossy());
+        if !file_name.starts_with("no-test-")
+            && file_name.ends_with(".smt2")
+            && map_err!(
+                entry.file_type(),
+                "while reading entry (file type of `{}`)",
+                file_name
+            )
+            .is_file()
         {
             println!("looking at `{}`", file_name);
             let file = OpenOptions::new()
