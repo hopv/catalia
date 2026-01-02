@@ -1314,7 +1314,6 @@ impl Config {
         let use_eldarica_cex = std::env::var("HOICE_USE_ELDARICA_CEX")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
             .unwrap_or_else(|_| bool_of_matches(&matches, "use_eldarica_cex"));
-
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
