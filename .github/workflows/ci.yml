@@ -4,6 +4,8 @@ on: [push, pull_request]
 
 env:
   CARGO_TERM_COLOR: always
+  # Use Eldarica for counterexample generation (more stable than Spacer)
+  HOICE_USE_ELDARICA_CEX: "1"
 
 jobs:
   build:
@@ -17,13 +19,20 @@ jobs:
         include:
         - os: macos-latest
           Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-osx-11.7.10.zip"
+          ELD_DOWNLOAD: "https://github.com/uuverifiers/eldarica/releases/download/v2.1/eldarica-bin-2.1.zip"
         - os: ubuntu-latest
           Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-glibc-2.31.zip"
+          ELD_DOWNLOAD: "https://github.com/uuverifiers/eldarica/releases/download/v2.1/eldarica-bin-2.1.zip"
 
     runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v2
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '11'
     - name: Z3 Setup
       run: |
         wget ${{matrix.Z3_DOWNLOAD}} -O z3.zip;
@@ -33,8 +42,19 @@ jobs:
         mkdir -p "${HOME}/.local/bin";
         mv z3/bin/z3 "${HOME}/.local/bin/.";
         echo "${HOME}/.local/bin" >> $GITHUB_PATH;
+    - name: Eldarica Setup
+      run: |
+        wget ${{matrix.ELD_DOWNLOAD}} -O eld.zip;
+        unzip eld.zip;
+        rm eld.zip;
+        mkdir -p "${HOME}/.local/bin";
+        mv eldarica-bin-2.1/eld "${HOME}/.local/bin/.";
+        mv eldarica-bin-2.1/binary-dist "${HOME}/.local/bin/.";
+        chmod +x "${HOME}/.local/bin/eld";
     - name: Check Z3
       run: z3 -h
+    - name: Check Eldarica
+      run: eld -h
     - name: Build
       run: cargo build --verbose
     - name: Debug Tests

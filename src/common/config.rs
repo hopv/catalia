@@ -1310,7 +1310,10 @@ impl Config {
 
         let no_hoice = matches.is_present("no_hoice");
         let no_eldarica = matches.is_present("no_eldarica");
-        let use_eldarica_cex = bool_of_matches(&matches, "use_eldarica_cex");
+        // Check environment variable first, then fall back to CLI arg
+        let use_eldarica_cex = std::env::var("HOICE_USE_ELDARICA_CEX")
+            .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
+            .unwrap_or_else(|_| bool_of_matches(&matches, "use_eldarica_cex"));
 
         // Catamorphism file
         let catamorphism_file = matches
