@@ -19,10 +19,10 @@ jobs:
         include:
         - os: macos-latest
           Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-osx-11.7.10.zip"
-          ELD_DOWNLOAD: "https://github.com/uuverifiers/eldarica/releases/download/v2.1/eldarica-bin-2.1.zip"
+          ELD_DOWNLOAD: "https://github.com/uuverifiers/eldarica/releases/download/v2.2.1/eldarica-bin-2.2.1.zip"
         - os: ubuntu-latest
           Z3_DOWNLOAD: "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-glibc-2.31.zip"
-          ELD_DOWNLOAD: "https://github.com/uuverifiers/eldarica/releases/download/v2.1/eldarica-bin-2.1.zip"
+          ELD_DOWNLOAD: "https://github.com/uuverifiers/eldarica/releases/download/v2.2.1/eldarica-bin-2.2.1.zip"
 
     runs-on: ${{ matrix.os }}
 
@@ -47,10 +47,9 @@ jobs:
         wget ${{matrix.ELD_DOWNLOAD}} -O eld.zip;
         unzip eld.zip;
         rm eld.zip;
-        mkdir -p "${HOME}/.local/bin";
-        mv eldarica-bin-2.1/eld "${HOME}/.local/bin/.";
-        mv eldarica-bin-2.1/binary-dist "${HOME}/.local/bin/.";
-        chmod +x "${HOME}/.local/bin/eld";
+        mv eldarica-* "${HOME}/.local/eldarica";
+        chmod +x "${HOME}/.local/eldarica/eld";
+        echo "${HOME}/.local/eldarica" >> $GITHUB_PATH;
     - name: Check Z3
       run: z3 -h
     - name: Check Eldarica
