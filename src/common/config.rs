@@ -1160,6 +1160,8 @@ pub struct Config {
     pub no_hoice: bool,
     /// Disable eldarica in the Catalia portfolio solver.
     pub no_eldarica: bool,
+    /// Use Eldarica instead of Spacer for counterexample generation.
+    pub use_eldarica_cex: bool,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1308,6 +1310,7 @@ impl Config {
 
         let no_hoice = matches.is_present("no_hoice");
         let no_eldarica = matches.is_present("no_eldarica");
+        let use_eldarica_cex = bool_of_matches(&matches, "use_eldarica_cex");
 
         // Catamorphism file
         let catamorphism_file = matches
@@ -1336,6 +1339,7 @@ impl Config {
             term_simpl,
             no_hoice,
             no_eldarica,
+            use_eldarica_cex,
             instance,
             preproc,
             solver,
@@ -1504,6 +1508,17 @@ impl Config {
                     .long("--no-eldarica")
                     .help("disable eldarica in the Catalia portfolio solver")
                     .takes_value(false)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("use_eldarica_cex")
+                    .long("--eldarica-cex")
+                    .help("use Eldarica instead of Spacer for counterexample generation")
+                    .validator(bool_validator)
+                    .value_name(bool_format)
+                    .default_value("off")
+                    .takes_value(true)
+                    .number_of_values(1)
                     .display_order(order()),
             )
     }

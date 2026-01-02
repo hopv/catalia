@@ -77,8 +77,14 @@ impl ResolutionProof {
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }
+    /// Get root nodes (query nodes)
+    ///
+    /// For Spacer, root nodes have heads starting with "query!"
+    /// For Eldarica, the root node has head "FALSE"
     pub fn get_roots(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.iter().filter(|x| x.head.starts_with("query!"))
+        self.nodes
+            .iter()
+            .filter(|x| x.head.starts_with("query!") || x.head == "FALSE")
     }
 }
 
