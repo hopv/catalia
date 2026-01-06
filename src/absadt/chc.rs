@@ -267,8 +267,172 @@ impl AbsClause {
 
         Ok(())
     }
-}
 
+	/// Creates a mapping between current index and supposed index
+	/// N.B. It assumes that the unused variables have been removed from the
+	/// arguments vector.
+	fn rescale_idx_map(vars: &VarInfos) -> VarHMap<Term> {
+		let mut ret = VarHMap::new();
+		for (supposed_idx, var) in vars.iter().enumerate() {
+			ret.insert(
+				var.idx,
+				term::var(supposed_idx, var.typ.clone()),
+			);
+		}
+		ret
+	}
+
+	/// Scans an `AbsClause` and return the set of variables used
+	fn used_variables_idx(&mut self) -> HashSet<VarIdx> {
+
+		let mut used_vars_idx = Self::search_used_vars(&self.lhs_term);
+
+		for lhs_pred in self.lhs_preds.iter() {
+			for arg in lhs_pred.args.iter() {
+				used_vars_idx.extend(Self::search_used_vars(&arg));
+			}
+		}
+		if let Some((_, body)) = &self.rhs {
+			for var_idx in body.iter() {
+				used_vars_idx.insert(*var_idx);
+            }
+		};
+
+		used_vars_idx
+	}
+
+	/// Rescales all the variable indices in a `AbsClause`
+	/// N.B. It assumes that the unused variables have been removed from the
+	/// arguments vector.
+	fn rescale_variables_idx<Map: VarIndexed<Term>>(&mut self, term_map: &Map) -> Res<()> {
+		self.lhs_term = self.lhs_term.subst(term_map).0;
+
+		for predicate in self.lhs_preds.iter_mut(){
+			let mut new_map = VarMap::new();
+			for arg in predicate.args.iter() {
+				new_map.push(arg.subst(term_map).0);
+			}
+			predicate.args = new_map.into();
+		}
+
+		if let Some((_, body)) = &mut self.rhs {
+			for var_idx in body.iter_mut() {
+				if let Some(term) = term_map.var_get(*var_idx){
+					match term.get() {
+						RTerm::Var(_, key_idx) => {
+							*var_idx = *key_idx;
+						}
+						_ => {
+							return Err(
+								Error::from_kind(
+									ErrorKind::Msg(
+										"In the right-hand side some argument is not a variable".to_string()
+									)
+								)
+							);
+						}
+					}
+				}
+			}
+		}
+
+		for var_info in self.vars.iter_mut(){
+			if let Some(old_term) = term_map.var_get(var_info.idx) {
+				match old_term.get() {
+					RTerm::Var(_, old_idx) => {
+						var_info.idx = *old_idx;
+					}
+					_ => {
+						return Err(
+							Error::from_kind(
+								ErrorKind::Msg(
+									"In the arguments something is not a variable".to_string()
+								)
+							)
+						);
+					}
+				}
+			}
+		}
+		Ok(())
+	}
+
+	pub fn remove_unused_vars(&mut self) -> Res<()> {
+		let used_vars_idx = self.used_variables_idx();
+
+		self.vars = self
+			.vars
+			.clone()
+			.into_iter()
+			.filter(|var_info| used_vars_idx.contains(&var_info.idx))
+			.collect::<VarMap<VarInfo>>();
+
+		self.rescale_variables_idx(&Self::rescale_idx_map(&self.vars))?;
+
+		Ok(())
+    }
+
+
+	/// Scan a term and returns the variables present within that term
+	fn search_used_vars(term: &RTerm) -> HashSet<VarIdx> {
+		let mut used_vars = HashSet::new();
+		let mut stack = Vec::new();
+		stack.push(term);
+		while let Some(term) = stack.pop() {
+			match term {
+				RTerm::Var(_, idx) => {
+					used_vars.insert(*idx);
+				}
+				RTerm::DTypNew {
+					depth: _,
+					typ: _,
+					name: _,
+					args,
+				}
+				| RTerm::App {
+					depth: _,
+					typ: _,
+					op: _,
+					args,
+				}
+				| RTerm::Fun {
+					depth: _,
+					typ: _,
+					name: _,
+					args,
+				} => {
+					for arg in args.iter() {
+						stack.push(arg);
+					}
+				}
+
+				RTerm::CArray {
+					depth: _,
+					typ: _,
+					term,
+				}
+				| RTerm::DTypSlc {
+					depth: _,
+					typ: _,
+					name: _,
+					term,
+				}
+				| RTerm::DTypTst {
+					depth: _,
+					typ: _,
+					name: _,
+					term,
+				} => {
+					stack.push(term);
+				}
+				RTerm::Cst(_) => {
+					// Do nothing since it is a constant
+				}
+			}
+		}
+		used_vars
+	}
+}
 pub struct AbsInstance<'a> {
     pub clauses: Vec<AbsClause>,
     pub original: &'a Instance,
@@ -382,6 +546,11 @@ impl<'a> AbsInstance<'a> {
                 }
             }
         }
+
+		for clause in clauses.iter_mut() {
+			clause.remove_unused_vars()?;
+		}
+
         for query in queries {
             clauses.push(query);
         }

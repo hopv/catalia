@@ -671,7 +671,6 @@ where
         (*self).var_get(var)
     }
 }
-
 /// Luby series.
 ///
 /// # Examples
