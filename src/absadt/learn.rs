@@ -1191,15 +1191,14 @@ fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: 
             term::dtyp_tst(name.clone(), linearize_term(inner, ctx, coef_vars))
         }
 
-        term::RTerm::CArray { term: inner, .. } => {
-            // CArray is rare in this context, just recurse into the inner term
-            // and reconstruct if needed. For now, return original if structure matches.
+        term::RTerm::CArray { term: inner, typ, .. } => {
+            // CArray represents a constant array. Coefficient templates typically don't
+            // contain arrays, but we handle it correctly for completeness.
             let new_inner = linearize_term(inner, ctx, coef_vars);
             if new_inner == *inner {
                 term.clone()
             } else {
-                // Create a new CArray - this is an edge case not expected in coefficient templates
-                term.clone() // Simplified: just return the original
+                term::cst_array(typ.clone(), new_inner)
             }
         }
 
