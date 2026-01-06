@@ -750,38 +750,39 @@ use std::collections::{HashMap, HashSet};
 /// - `c * (d + e)` → `c*d + c*e`
 /// - `(a + b) * (c + d)` → `a*c + a*d + b*c + b*d`
 /// - `c * c * c` → `c` (since c³ = c for c ∈ {-1, 0, 1})
+///
+/// Note: Catalia's term simplifier (`src/term/simplify.rs`) does NOT distribute general
+/// multiplication over addition - it only handles CMul (constant * term) distribution.
+/// This function is specifically designed for coefficient templates in [-1, 1] range.
 fn expand_to_polynomial(term: &term::Term, coef_vars: &VarSet) -> term::Term {
-    expand_term_recursive(term, coef_vars)
-}
-
-fn expand_term_recursive(term: &term::Term, coef_vars: &VarSet) -> term::Term {
     match term.get() {
         term::RTerm::Var(_, _) | term::RTerm::Cst(_) => term.clone(),
 
         term::RTerm::App { op, args, .. } => {
             // First, recursively expand all arguments
             let expanded_args: Vec<term::Term> =
-                args.iter().map(|a| expand_term_recursive(a, coef_vars)).collect();
+                args.iter().map(|a| expand_to_polynomial(a, coef_vars)).collect();
 
             match op {
                 term::Op::Mul => expand_multiplication(&expanded_args, coef_vars),
                 term::Op::CMul => {
-                    // CMul is (constant * term), expand the term part
-                    if expanded_args.len() == 2 {
-                        let const_part = &expanded_args[0];
-                        let term_part = &expanded_args[1];
-                        // If term_part is an addition, distribute
-                        if let Some((term::Op::Add, add_args)) = term_part.app_inspect() {
-                            let distributed: Vec<term::Term> = add_args
-                                .iter()
-                                .map(|a| term::mul(vec![const_part.clone(), a.clone()]))
-                                .collect();
-                            term::add(distributed)
-                        } else {
-                            term::mul(vec![const_part.clone(), term_part.clone()])
-                        }
+                    // CMul always has exactly 2 arguments: [constant, term]
+                    // (per term::Op::CMul documentation in src/term/op.rs)
+                    debug_assert_eq!(
+                        expanded_args.len(), 2,
+                        "CMul must have exactly 2 arguments, found {}", expanded_args.len()
+                    );
+                    let const_part = &expanded_args[0];
+                    let term_part = &expanded_args[1];
+                    // If term_part is an addition, distribute: c*(a+b) → c*a + c*b
+                    if let Some((term::Op::Add, add_args)) = term_part.app_inspect() {
+                        let distributed: Vec<term::Term> = add_args
+                            .iter()
+                            .map(|a| term::mul(vec![const_part.clone(), a.clone()]))
+                            .collect();
+                        term::add(distributed)
                     } else {
-                        term::app(term::Op::CMul, expanded_args)
+                        term::mul(vec![const_part.clone(), term_part.clone()])
                     }
                 }
                 term::Op::Add => {
@@ -800,8 +801,40 @@ fn expand_term_recursive(term: &term::Term, coef_vars: &VarSet) -> term::Term {
             }
         }
 
-        // For other term types, just clone (datatypes, etc.)
-        _ => term.clone(),
+        // Datatype and function terms - linearization should only see LIA terms,
+        // but we handle these explicitly for robustness.
+        term::RTerm::DTypNew { name, args, typ, .. } => {
+            let new_args: Vec<term::Term> = args
+                .iter()
+                .map(|a| expand_to_polynomial(a, coef_vars))
+                .collect();
+            term::dtyp_new(typ.clone(), name.clone(), new_args)
+        }
+
+        term::RTerm::DTypSlc { name, term: inner, typ, .. } => {
+            term::dtyp_slc(typ.clone(), name.clone(), expand_to_polynomial(inner, coef_vars))
+        }
+
+        term::RTerm::DTypTst { name, term: inner, .. } => {
+            term::dtyp_tst(name.clone(), expand_to_polynomial(inner, coef_vars))
+        }
+
+        term::RTerm::CArray { term: inner, typ, .. } => {
+            let new_inner = expand_to_polynomial(inner, coef_vars);
+            if new_inner == *inner {
+                term.clone()
+            } else {
+                term::cst_array(typ.clone(), new_inner)
+            }
+        }
+
+        term::RTerm::Fun { name, args, .. } => {
+            let new_args: Vec<term::Term> = args
+                .iter()
+                .map(|a| expand_to_polynomial(a, coef_vars))
+                .collect();
+            term::fun(name.clone(), new_args)
+        }
     }
 }
 
@@ -814,7 +847,16 @@ fn expand_term_recursive(term: &term::Term, coef_vars: &VarSet) -> term::Term {
 /// combinations like `a*x + b*y + c` rather than deeply nested sum structures.
 /// If this becomes a bottleneck, consider adding a size limit or alternative expansion.
 fn expand_multiplication(args: &[term::Term], coef_vars: &VarSet) -> term::Term {
-    // Separate additions from other terms
+    // Classify terms into three categories:
+    // 1. additions: Sub-terms that are additions - need Cartesian product expansion
+    // 2. coef_var_counts: Coefficient variables (c, d, e in templates) - need cubic reduction
+    // 3. other_terms: Everything else - constants (2, 5), non-coefficient variables (x, y),
+    //    function applications, etc. These are preserved as-is in the product.
+    //
+    // For example, in `c * x * 2 * (a + b)` where c is a coefficient and x is not:
+    // - additions: [(a + b)]
+    // - coef_var_counts: {c: 1}
+    // - other_terms: [x, 2]
     let mut additions: Vec<&Vec<term::Term>> = Vec::new();
     let mut other_terms: Vec<term::Term> = Vec::new();
     let mut coef_var_counts: HashMap<VarIdx, usize> = HashMap::new();
