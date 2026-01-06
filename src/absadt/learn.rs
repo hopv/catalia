@@ -806,6 +806,13 @@ fn expand_term_recursive(term: &term::Term, coef_vars: &VarSet) -> term::Term {
 }
 
 /// Expands a multiplication, distributing over additions and simplifying cubic terms.
+///
+/// This uses Cartesian product expansion, which can produce exponentially many terms
+/// when there are multiple sums. For example, `(a+b)*(c+d)*(e+f)*(g+h)` produces 2^4=16 terms.
+///
+/// This is acceptable for coefficient templates, which are typically simple linear
+/// combinations like `a*x + b*y + c` rather than deeply nested sum structures.
+/// If this becomes a bottleneck, consider adding a size limit or alternative expansion.
 fn expand_multiplication(args: &[term::Term], coef_vars: &VarSet) -> term::Term {
     // Separate additions from other terms
     let mut additions: Vec<&Vec<term::Term>> = Vec::new();
