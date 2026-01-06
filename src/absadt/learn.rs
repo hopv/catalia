@@ -1116,39 +1116,39 @@ fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: 
                         }
 
                         // Handle squared terms (c² → c2)
-                        let mut processed: HashSet<VarIdx> = HashSet::new();
                         for (&idx, &count) in &counts {
                             if count >= 2 {
                                 // c² → c2 (squared variable)
                                 let c2 = ctx.get_or_create_squared(idx);
                                 result_coef_terms.push(term::var(c2, typ::int()));
-                                processed.insert(idx);
                             }
                         }
 
-                        // For single occurrences, we need to handle products
-                        let single_vars: Vec<VarIdx> = counts
-                            .iter()
-                            .filter(|(_, &c)| c == 1)
-                            .map(|(&idx, _)| idx)
-                            .collect();
+                        // For single occurrences, add them to result_coef_terms
+                        for (&idx, &count) in &counts {
+                            if count == 1 {
+                                result_coef_terms.push(term::var(idx, typ::int()));
+                            }
+                        }
 
-                        if single_vars.len() >= 2 {
-                            // Create product variables for pairs
+                        // Recursively pair coefficient-like terms until at most one remains.
+                        // After pairing, aux vars (c_d, c2) are also in {-1, 0, 1}, so they
+                        // need further pairing if there are multiple.
+                        while result_coef_terms.len() >= 2 {
+                            let mut new_terms = Vec::new();
                             let mut i = 0;
-                            while i + 1 < single_vars.len() {
-                                let c = single_vars[i];
-                                let d = single_vars[i + 1];
-                                let c_d = ctx.get_or_create_product(c, d);
-                                result_coef_terms.push(term::var(c_d, typ::int()));
+                            while i + 1 < result_coef_terms.len() {
+                                let a_idx = result_coef_terms[i].var_idx().unwrap();
+                                let b_idx = result_coef_terms[i + 1].var_idx().unwrap();
+                                let ab = ctx.get_or_create_product(a_idx, b_idx);
+                                new_terms.push(term::var(ab, typ::int()));
                                 i += 2;
                             }
                             // If odd number, keep the last one
-                            if i < single_vars.len() {
-                                result_coef_terms.push(term::var(single_vars[i], typ::int()));
+                            if i < result_coef_terms.len() {
+                                new_terms.push(result_coef_terms[i].clone());
                             }
-                        } else if single_vars.len() == 1 {
-                            result_coef_terms.push(term::var(single_vars[0], typ::int()));
+                            result_coef_terms = new_terms;
                         }
                     }
 
