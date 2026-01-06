@@ -1852,8 +1852,9 @@ fn test_collect_products_ignores_non_coef() {
 
 #[test]
 fn test_linearize_term_mixed() {
-    // Test: c * c * d => should produce c2 (for c*c) and keep d separate
-    // After linearization: c2 * d (where c2 is aux var for c²)
+    // Test: c * c * d => fully linearized to a single aux variable
+    // c² → c2 (squared aux var), then c2 * d → (c2)_d (product aux var)
+    // Result should be a single aux variable, not a multiplication
     let c_idx = VarIdx::new(0);
     let d_idx = VarIdx::new(1);
     let start_var = VarIdx::new(10);
@@ -1875,10 +1876,15 @@ fn test_linearize_term_mixed() {
     assert_eq!(ctx.squared_vars.len(), 1);
     assert!(ctx.squared_vars.contains_key(&c_idx));
 
-    // Result should be a multiplication (c2 * d)
-    let (op, args) = linearized.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Mul);
-    assert_eq!(args.len(), 2);
+    // Should have created a product variable for c2 * d
+    assert_eq!(ctx.product_vars.len(), 1);
+
+    // Result should be a single variable (the (c2)_d aux var)
+    assert!(
+        linearized.var_idx().is_some(),
+        "Expected linearized c*c*d to be a single variable, got: {}",
+        linearized
+    );
 }
 
 #[test]
@@ -2159,3 +2165,92 @@ fn test_linearization_constraint_structure() {
         assert_eq!(sub_op, term::Op::Or);
     }
 }
+
+#[test]
+fn test_linearize_three_distinct_vars() {
+    // Test: c * d * e (three distinct coefficient variables)
+    // Should create product vars recursively: c_d, then (c_d)_e
+    // Result should be a single aux var, not a product
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    let e_idx = VarIdx::new(2);
+    let start_var = VarIdx::new(10);
+
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    coef_vars.insert(e_idx);
+
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    let e = term::var(e_idx, typ::int());
+
+    // c * d * e
+    let term = term::mul(vec![c.clone(), d.clone(), e.clone()]);
+
+    let mut ctx = LinearizationContext::new(start_var);
+    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
+
+    // Should have created 2 product vars: c_d and (c_d)_e
+    assert_eq!(ctx.product_vars.len(), 2);
+
+    // Result should be a single variable (the final aux var), not a multiplication
+    assert!(
+        linearized.var_idx().is_some(),
+        "Expected linearized c*d*e to be a single variable, got: {}",
+        linearized
+    );
+}
+
+#[test]
+fn test_linearize_four_distinct_vars() {
+    // Test: c * d * e * f (four distinct coefficient variables)
+    // Should create: c_d, e_f, then (c_d)_(e_f)
+    // Result should be a single aux var
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    let e_idx = VarIdx::new(2);
+    let f_idx = VarIdx::new(3);
+    let start_var = VarIdx::new(10);
+
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    coef_vars.insert(e_idx);
+    coef_vars.insert(f_idx);
+
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    let e = term::var(e_idx, typ::int());
+    let f = term::var(f_idx, typ::int());
+
+    // c * d * e * f
+    let term = term::mul(vec![c.clone(), d.clone(), e.clone(), f.clone()]);
+
+    let mut ctx = LinearizationContext::new(start_var);
+    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
+
+    // Should have created 3 product vars: c_d, e_f, (c_d)_(e_f)
+    assert_eq!(ctx.product_vars.len(), 3);
+
+    // Result should be a single variable
+    assert!(
+        linearized.var_idx().is_some(),
+        "Expected linearized c*d*e*f to be a single variable, got: {}",
+        linearized
+    );
+}
+
+// ============================================================================
+// Note on integration tests:
+// The following tests from the plan require SMT solver integration:
+// - test_solve_by_linearization_sat
+// - test_solve_by_linearization_unsat
+// - test_linearization_matches_blasting
+// - test_linearization_triggered_for_large_vars
+//
+// These are best tested as integration tests with the full tool, e.g.:
+//   HOICE_FORCE_LINEARIZATION=1 cargo test --test <integration_test>
+// or by running:
+//   ./target/debug/hoice --force-linearization=on <test_file.smt2>
+// ============================================================================
