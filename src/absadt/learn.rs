@@ -892,8 +892,6 @@ fn expand_multiplication(args: &[term::Term], coef_vars: &VarSet) -> term::Term 
         // No additions to distribute, just multiply
         if other_terms.is_empty() {
             term::int(1)
-        } else if other_terms.len() == 1 {
-            other_terms.pop().unwrap()
         } else {
             term::mul(other_terms)
         }
@@ -919,8 +917,6 @@ fn expand_multiplication(args: &[term::Term], coef_vars: &VarSet) -> term::Term 
             .map(|p| {
                 if p.is_empty() {
                     term::int(1)
-                } else if p.len() == 1 {
-                    p.into_iter().next().unwrap()
                 } else {
                     // Recursively expand in case there are nested multiplications
                     expand_multiplication(&p, coef_vars)
@@ -928,11 +924,7 @@ fn expand_multiplication(args: &[term::Term], coef_vars: &VarSet) -> term::Term 
             })
             .collect();
 
-        if sum_terms.len() == 1 {
-            sum_terms.into_iter().next().unwrap()
-        } else {
-            term::add(sum_terms)
-        }
+        term::add(sum_terms)
     }
 }
 
@@ -1207,8 +1199,6 @@ fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: 
 
                     if all_terms.is_empty() {
                         term::int(1)
-                    } else if all_terms.len() == 1 {
-                        all_terms.pop().unwrap()
                     } else {
                         term::mul(all_terms)
                     }
