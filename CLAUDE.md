@@ -69,7 +69,7 @@ Look for correlation between:
 - `new_encs:` - candidate encoder produced
 - `checking enc refutes cex...` - whether it rules out models
 
-If new_encs changes but never refutes CEX, suspect over-permissive template or need for structured templates (tags, recursion dependence).
+If `new_encs` changes but never refutes CEX, suspect over-permissive template or need for structured templates (tags, recursion dependence).
 
 ## Runtime Dependencies
 
