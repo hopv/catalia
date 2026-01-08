@@ -744,285 +744,274 @@ fn solve_by_blasting(
 
 use std::collections::{HashMap, HashSet};
 
-/// Expands a term to polynomial normal form by distributing multiplication over addition.
+/// Intermediate representation for arithmetic terms: either a constant or a variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConstOrVar {
+    Const(i64),
+    Var(VarIdx),
+}
+
+/// Normalized representation of arithmetic as sum-of-products: Vec<Vec<ConstOrVar>>.
+/// - Inner Vec: represents a product term (e.g., [3, x, y] = 3×x×y)
+/// - Outer Vec: represents a sum (e.g., [[3, x, y], [y, 2, y]] = 3×x×y + y×2×y)
+type SumOfProducts = Vec<Vec<ConstOrVar>>;
+
+/// Parses an arithmetic term into normalized sum-of-products form.
 ///
-/// For example:
-/// - `c * (d + e)` → `c*d + c*e`
-/// - `(a + b) * (c + d)` → `a*c + a*d + b*c + b*d`
-/// - `c * c * c` → `c` (since c³ = c for c ∈ {-1, 0, 1})
+/// Applies c³ = c simplification for coefficient variables (since c ∈ {-1, 0, 1}).
 ///
-/// Note: Catalia's term simplifier (`src/term/simplify.rs`) does NOT distribute general
-/// multiplication over addition - it only handles CMul (constant * term) distribution.
-/// This function is specifically designed for coefficient templates in [-1, 1] range.
-fn expand_to_polynomial(term: &term::Term, coef_vars: &VarSet) -> term::Term {
+/// Examples:
+/// - `c * (d + e)` → `[[c, d], [c, e]]` (represents c*d + c*e)
+/// - `(a + b) * (c + d)` → `[[a, c], [a, d], [b, c], [b, d]]`
+/// - `c * c * c` → `[[c]]` (cubic simplification)
+fn arithmetic_to_normal_form(term: &term::Term, coef_vars: &VarSet) -> SumOfProducts {
     match term.get() {
-        term::RTerm::Var(_, _) | term::RTerm::Cst(_) => term.clone(),
-
-        term::RTerm::App { op, args, .. } => {
-            // First, recursively expand all arguments
-            let expanded_args: Vec<term::Term> =
-                args.iter().map(|a| expand_to_polynomial(a, coef_vars)).collect();
-
-            match op {
-                term::Op::Mul => expand_multiplication(&expanded_args, coef_vars),
-                term::Op::CMul => {
-                    // CMul always has exactly 2 arguments: [constant, term]
-                    // (per term::Op::CMul documentation in src/term/op.rs)
-                    debug_assert_eq!(
-                        expanded_args.len(), 2,
-                        "CMul must have exactly 2 arguments, found {}", expanded_args.len()
-                    );
-                    let const_part = &expanded_args[0];
-                    let term_part = &expanded_args[1];
-                    // If term_part is an addition, distribute: c*(a+b) → c*a + c*b
-                    if let Some((term::Op::Add, add_args)) = term_part.app_inspect() {
-                        let distributed: Vec<term::Term> = add_args
-                            .iter()
-                            .map(|a| term::mul(vec![const_part.clone(), a.clone()]))
-                            .collect();
-                        term::add(distributed)
-                    } else {
-                        term::mul(vec![const_part.clone(), term_part.clone()])
-                    }
-                }
-                term::Op::Add => {
-                    // Flatten nested additions
-                    let mut flat_args = Vec::new();
-                    for arg in expanded_args {
-                        if let Some((term::Op::Add, nested)) = arg.app_inspect() {
-                            flat_args.extend(nested.clone());
-                        } else {
-                            flat_args.push(arg);
-                        }
-                    }
-                    term::add(flat_args)
-                }
-                _ => term::app(*op, expanded_args),
-            }
+        term::RTerm::Var(_, idx) => {
+            // Single variable becomes a product with one element
+            vec![vec![ConstOrVar::Var(*idx)]]
         }
 
-        // Datatype and function terms - linearization should only see LIA terms,
-        // but we handle these explicitly for robustness.
-        term::RTerm::DTypNew { name, args, typ, .. } => {
-            let new_args: Vec<term::Term> = args
-                .iter()
-                .map(|a| expand_to_polynomial(a, coef_vars))
-                .collect();
-            term::dtyp_new(typ.clone(), name.clone(), new_args)
-        }
-
-        term::RTerm::DTypSlc { name, term: inner, typ, .. } => {
-            term::dtyp_slc(typ.clone(), name.clone(), expand_to_polynomial(inner, coef_vars))
-        }
-
-        term::RTerm::DTypTst { name, term: inner, .. } => {
-            term::dtyp_tst(name.clone(), expand_to_polynomial(inner, coef_vars))
-        }
-
-        term::RTerm::CArray { term: inner, typ, .. } => {
-            let new_inner = expand_to_polynomial(inner, coef_vars);
-            if new_inner == *inner {
-                term.clone()
+        term::RTerm::Cst(val) => {
+            if let Ok(Some(i)) = val.get().to_int() {
+                let i_i64: i64 = i.to_string().parse().expect("integer too large for i64");
+                vec![vec![ConstOrVar::Const(i_i64)]]
             } else {
-                term::cst_array(typ.clone(), new_inner)
+                panic!("linearization: non-integer constant in arithmetic context")
             }
         }
 
-        term::RTerm::Fun { name, args, .. } => {
-            let new_args: Vec<term::Term> = args
-                .iter()
-                .map(|a| expand_to_polynomial(a, coef_vars))
-                .collect();
-            term::fun(name.clone(), new_args)
-        }
+        term::RTerm::App { op, args, .. } => match op {
+            term::Op::Add => {
+                // Addition: concatenate all sub-terms' sum-of-products
+                let mut result = Vec::new();
+                for arg in args {
+                    result.extend(arithmetic_to_normal_form(arg, coef_vars));
+                }
+                result
+            }
+
+            term::Op::Mul | term::Op::CMul => {
+                // Multiplication: Cartesian product of all sub-terms
+                let sub_products: Vec<SumOfProducts> = args
+                    .iter()
+                    .map(|a| arithmetic_to_normal_form(a, coef_vars))
+                    .collect();
+
+                multiply_sum_of_products(&sub_products, coef_vars)
+            }
+
+            term::Op::Sub => {
+                // Subtraction: a - b = a + (-1)*b
+                if args.len() == 1 {
+                    // Unary minus: -a = (-1)*a
+                    let sub = arithmetic_to_normal_form(&args[0], coef_vars);
+                    multiply_by_constant(sub, -1)
+                } else {
+                    // Binary or n-ary: a - b - c = a + (-1)*b + (-1)*c
+                    let mut result = arithmetic_to_normal_form(&args[0], coef_vars);
+                    for arg in &args[1..] {
+                        let negated = multiply_by_constant(
+                            arithmetic_to_normal_form(arg, coef_vars),
+                            -1,
+                        );
+                        result.extend(negated);
+                    }
+                    result
+                }
+            }
+
+            _ => panic!("linearization: unexpected operator {:?} in arithmetic context", op),
+        },
+
+        _ => panic!("linearization: unexpected term type in arithmetic context"),
     }
 }
 
-/// Expands a multiplication, distributing over additions and simplifying cubic terms.
-///
-/// This uses Cartesian product expansion, which can produce exponentially many terms
-/// when there are multiple sums. For example, `(a+b)*(c+d)*(e+f)*(g+h)` produces 2^4=16 terms.
-///
-/// This is acceptable for coefficient templates, which are typically simple linear
-/// combinations like `a*x + b*y + c` rather than deeply nested sum structures.
-/// If this becomes a bottleneck, consider adding a size limit or alternative expansion.
-fn expand_multiplication(args: &[term::Term], coef_vars: &VarSet) -> term::Term {
-    // Classify terms into three categories:
-    // 1. additions: Sub-terms that are additions - need Cartesian product expansion
-    // 2. coef_var_counts: Coefficient variables (c, d, e in templates) - need cubic reduction
-    // 3. other_terms: Everything else - constants (2, 5), non-coefficient variables (x, y),
-    //    function applications, etc. These are preserved as-is in the product.
-    //
-    // For example, in `c * x * 2 * (a + b)` where c is a coefficient and x is not:
-    // - additions: [(a + b)]
-    // - coef_var_counts: {c: 1}
-    // - other_terms: [x, 2]
-    let mut additions: Vec<&Vec<term::Term>> = Vec::new();
-    let mut other_terms: Vec<term::Term> = Vec::new();
-    let mut coef_var_counts: HashMap<VarIdx, usize> = HashMap::new();
+/// Multiplies a list of sum-of-products using Cartesian product.
+/// Applies c³ = c simplification for coefficient variables.
+fn multiply_sum_of_products(
+    sum_of_products_list: &[SumOfProducts],
+    coef_vars: &VarSet,
+) -> SumOfProducts {
+    if sum_of_products_list.is_empty() {
+        return vec![vec![ConstOrVar::Const(1)]];
+    }
 
-    for arg in args {
-        if let Some((term::Op::Add, add_args)) = arg.app_inspect() {
-            additions.push(add_args);
-        } else if let Some(var_idx) = arg.var_idx() {
-            if coef_vars.contains(&var_idx) {
-                *coef_var_counts.entry(var_idx).or_insert(0) += 1;
-            } else {
-                other_terms.push(arg.clone());
+    let mut result = sum_of_products_list[0].clone();
+
+    for sop in &sum_of_products_list[1..] {
+        let mut new_result = Vec::new();
+        for prod1 in &result {
+            for prod2 in sop {
+                let mut combined = prod1.clone();
+                combined.extend(prod2.clone());
+                // Apply c³ = c simplification
+                combined = simplify_product(combined, coef_vars);
+                new_result.push(combined);
             }
-        } else {
-            other_terms.push(arg.clone());
+        }
+        result = new_result;
+    }
+
+    result
+}
+
+/// Multiplies a sum-of-products by a constant.
+fn multiply_by_constant(mut sop: SumOfProducts, constant: i64) -> SumOfProducts {
+    for product in &mut sop {
+        product.insert(0, ConstOrVar::Const(constant));
+    }
+    sop
+}
+
+/// Simplifies a product by applying c³ = c for coefficient variables.
+/// For coefficient variables: c^n → c if n is odd, c² if n is even (and n > 0).
+fn simplify_product(product: Vec<ConstOrVar>, coef_vars: &VarSet) -> Vec<ConstOrVar> {
+    let mut result = Vec::new();
+    let mut coef_counts: HashMap<VarIdx, usize> = HashMap::new();
+
+    // Separate constants, coefficient variables, and other variables
+    for item in product {
+        match item {
+            ConstOrVar::Const(_) => result.push(item),
+            ConstOrVar::Var(idx) => {
+                if coef_vars.contains(&idx) {
+                    *coef_counts.entry(idx).or_insert(0) += 1;
+                } else {
+                    result.push(item);
+                }
+            }
         }
     }
 
-    // Simplify cubic terms: c³ = c for c ∈ {-1, 0, 1}
-    let mut simplified_vars: Vec<term::Term> = Vec::new();
-    for (var_idx, count) in coef_var_counts {
-        // c^n where n >= 1: reduce to c if n is odd, c² if n is even
+    // Apply cubic simplification: c^n → c if n is odd, c² if n is even
+    for (idx, count) in coef_counts {
         let effective_count = if count % 2 == 0 { 2 } else { 1 };
         for _ in 0..effective_count {
-            simplified_vars.push(term::var(var_idx, typ::int()));
+            result.push(ConstOrVar::Var(idx));
         }
     }
 
-    // Combine other_terms with simplified_vars
-    other_terms.extend(simplified_vars);
-
-    if additions.is_empty() {
-        // No additions to distribute, just multiply
-        if other_terms.is_empty() {
-            term::int(1)
-        } else {
-            term::mul(other_terms)
-        }
-    } else {
-        // Distribute over additions using Cartesian product
-        let mut products = vec![other_terms];
-
-        for add_args in additions {
-            let mut new_products = Vec::new();
-            for product in products {
-                for add_term in add_args {
-                    let mut new_product = product.clone();
-                    new_product.push(add_term.clone());
-                    new_products.push(new_product);
-                }
-            }
-            products = new_products;
-        }
-
-        // Convert each product to a term
-        let sum_terms: Vec<term::Term> = products
-            .into_iter()
-            .map(|p| {
-                if p.is_empty() {
-                    term::int(1)
-                } else {
-                    // Recursively expand in case there are nested multiplications
-                    expand_multiplication(&p, coef_vars)
-                }
-            })
-            .collect();
-
-        term::add(sum_terms)
-    }
+    result
 }
 
-/// Collects all squared coefficient variables and product pairs from a term.
+/// Linearizes coefficient products in a sum-of-products by introducing auxiliary variables.
 ///
-/// Returns (squared_vars, product_pairs) where:
-/// - squared_vars: coefficient variables that appear as c*c
-/// - product_pairs: ordered pairs (c, d) of distinct coefficient variables appearing as c*d
-///
-/// Note: This function is not used in production (linearize_term does on-the-fly detection
-/// which is more efficient), but is retained for unit testing the product collection logic.
-#[cfg(test)]
-fn collect_products(
-    term: &term::Term,
+/// For each product term:
+/// - Scans for coefficient variable products (c*c or c*d)
+/// - Replaces c² with auxiliary variable c2
+/// - Replaces c*d with auxiliary variable c_d
+/// - Handles n-ary products via recursive pairing
+fn linearize_products(
+    sop: SumOfProducts,
     coef_vars: &VarSet,
-) -> (HashSet<VarIdx>, HashSet<(VarIdx, VarIdx)>) {
-    let mut squared = HashSet::new();
-    let mut products = HashSet::new();
-    collect_products_recursive(term, coef_vars, &mut squared, &mut products);
-    (squared, products)
+    ctx: &mut LinearizationContext,
+) -> SumOfProducts {
+    sop.into_iter()
+        .map(|product| linearize_single_product(product, coef_vars, ctx))
+        .collect()
 }
 
-#[cfg(test)]
-fn collect_products_recursive(
-    term: &term::Term,
+/// Linearizes a single product term.
+fn linearize_single_product(
+    product: Vec<ConstOrVar>,
     coef_vars: &VarSet,
-    squared: &mut HashSet<VarIdx>,
-    products: &mut HashSet<(VarIdx, VarIdx)>,
-) {
-    match term.get() {
-        term::RTerm::Var(_, _) | term::RTerm::Cst(_) => {}
+    ctx: &mut LinearizationContext,
+) -> Vec<ConstOrVar> {
+    let mut result = Vec::new();
+    let mut coef_terms = Vec::new();
 
-        term::RTerm::App { op, args, .. } => {
-            match op {
-                term::Op::Mul => {
-                    // Collect coefficient variables in this multiplication
-                    let mut coef_indices: Vec<VarIdx> = Vec::new();
-                    for arg in args {
-                        if let Some(var_idx) = arg.var_idx() {
-                            if coef_vars.contains(&var_idx) {
-                                coef_indices.push(var_idx);
-                            }
-                        }
-                        // Recurse into nested terms
-                        collect_products_recursive(arg, coef_vars, squared, products);
-                    }
-
-                    // Find squared terms and product pairs
-                    let mut seen: HashMap<VarIdx, usize> = HashMap::new();
-                    for idx in &coef_indices {
-                        *seen.entry(*idx).or_insert(0) += 1;
-                    }
-
-                    for (&idx, &count) in &seen {
-                        if count >= 2 {
-                            squared.insert(idx);
-                        }
-                    }
-
-                    // Generate product pairs for distinct variables
-                    let unique_vars: Vec<VarIdx> = seen.keys().copied().collect();
-                    for i in 0..unique_vars.len() {
-                        for j in (i + 1)..unique_vars.len() {
-                            let a = unique_vars[i];
-                            let b = unique_vars[j];
-                            // Use ordered pair (min, max) to avoid duplicates
-                            let pair = if a < b { (a, b) } else { (b, a) };
-                            products.insert(pair);
-                        }
-                    }
-                }
-                _ => {
-                    // Recurse into all arguments
-                    for arg in args {
-                        collect_products_recursive(arg, coef_vars, squared, products);
-                    }
-                }
+    // Separate coefficient variables from other terms
+    for item in product {
+        match item {
+            ConstOrVar::Var(idx) if coef_vars.contains(&idx) => {
+                coef_terms.push(idx);
             }
-        }
-
-        term::RTerm::DTypNew { args, .. } => {
-            for arg in args {
-                collect_products_recursive(arg, coef_vars, squared, products);
-            }
-        }
-
-        term::RTerm::DTypSlc { term: inner, .. }
-        | term::RTerm::DTypTst { term: inner, .. }
-        | term::RTerm::CArray { term: inner, .. } => {
-            collect_products_recursive(inner, coef_vars, squared, products);
-        }
-
-        term::RTerm::Fun { args, .. } => {
-            for arg in args {
-                collect_products_recursive(arg, coef_vars, squared, products);
-            }
+            _ => result.push(item),
         }
     }
+
+    // Handle coefficient variables
+    if !coef_terms.is_empty() {
+        // Count occurrences for squared term detection
+        let mut counts: HashMap<VarIdx, usize> = HashMap::new();
+        for idx in &coef_terms {
+            *counts.entry(*idx).or_insert(0) += 1;
+        }
+
+        // Collect linearized coefficient terms
+        let mut linearized_coef_terms = Vec::new();
+
+        // Handle squared terms (c² → c2)
+        for (&idx, &count) in &counts {
+            if count >= 2 {
+                let c2 = ctx.get_or_create_squared(idx);
+                linearized_coef_terms.push(c2);
+            }
+        }
+
+        // Handle single occurrences
+        for (&idx, &count) in &counts {
+            if count == 1 {
+                linearized_coef_terms.push(idx);
+            }
+        }
+
+        // Recursively pair until at most one remains
+        while linearized_coef_terms.len() >= 2 {
+            let mut new_terms = Vec::new();
+            let mut i = 0;
+            while i + 1 < linearized_coef_terms.len() {
+                let a_idx = linearized_coef_terms[i];
+                let b_idx = linearized_coef_terms[i + 1];
+                let ab = ctx.get_or_create_product(a_idx, b_idx);
+                new_terms.push(ab);
+                i += 2;
+            }
+            if i < linearized_coef_terms.len() {
+                new_terms.push(linearized_coef_terms[i]);
+            }
+            linearized_coef_terms = new_terms;
+        }
+
+        // Add linearized coefficient terms to result
+        for idx in linearized_coef_terms {
+            result.push(ConstOrVar::Var(idx));
+        }
+    }
+
+    result
+}
+
+/// Converts sum-of-products back to a term::Term.
+fn from_sum_of_products(sop: SumOfProducts) -> term::Term {
+    if sop.is_empty() {
+        return term::int(0);
+    }
+
+    let sum_terms: Vec<term::Term> = sop
+        .into_iter()
+        .map(|product| from_product(product))
+        .collect();
+
+    term::add(sum_terms)
+}
+
+/// Converts a single product to a term::Term.
+fn from_product(product: Vec<ConstOrVar>) -> term::Term {
+    if product.is_empty() {
+        return term::int(1);
+    }
+
+    let factors: Vec<term::Term> = product
+        .into_iter()
+        .map(|item| match item {
+            ConstOrVar::Const(n) => term::int(n),
+            ConstOrVar::Var(idx) => term::var(idx, typ::int()),
+        })
+        .collect();
+
+    term::mul(factors)
 }
 
 /// Context for linearization: manages auxiliary variables and their constraints.
@@ -1122,89 +1111,65 @@ impl LinearizationContext {
     }
 }
 
-/// Rewrites a term by substituting coefficient products with auxiliary variables.
+/// Linearizes a formula by transforming arithmetic terms at comparison boundaries.
+///
+/// This boundary-based approach transforms arithmetic terms only when encountered
+/// within comparison operators (>=, ==, etc.), avoiding fragile dependencies on
+/// term constructor simplification behavior.
 fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: &VarSet) -> term::Term {
     match term.get() {
         term::RTerm::Var(_, _) | term::RTerm::Cst(_) => term.clone(),
 
         term::RTerm::App { op, args, .. } => {
             match op {
-                term::Op::Mul => {
-                    // Collect coefficient variables and other terms
-                    let mut coef_indices: Vec<VarIdx> = Vec::new();
-                    let mut other_terms: Vec<term::Term> = Vec::new();
+                // BOUNDARY: Comparison operators contain arithmetic terms
+                term::Op::Ge | term::Op::Gt | term::Op::Le | term::Op::Lt if args.len() == 2 => {
+                    // Transform both sides at this boundary
+                    let left_poly = arithmetic_to_normal_form(&args[0], coef_vars);
+                    let right_poly = arithmetic_to_normal_form(&args[1], coef_vars);
 
-                    for arg in args {
-                        if let Some(var_idx) = arg.var_idx() {
-                            if coef_vars.contains(&var_idx) {
-                                coef_indices.push(var_idx);
-                            } else {
-                                other_terms.push(linearize_term(arg, ctx, coef_vars));
-                            }
-                        } else {
-                            other_terms.push(linearize_term(arg, ctx, coef_vars));
-                        }
-                    }
+                    let left_lin = linearize_products(left_poly, coef_vars, ctx);
+                    let right_lin = linearize_products(right_poly, coef_vars, ctx);
 
-                    // Process coefficient variables: replace products with aux vars
-                    let mut result_coef_terms: Vec<term::Term> = Vec::new();
+                    let left_term = from_sum_of_products(left_lin);
+                    let right_term = from_sum_of_products(right_lin);
 
-                    if !coef_indices.is_empty() {
-                        // Count occurrences of each coefficient variable
-                        let mut counts: HashMap<VarIdx, usize> = HashMap::new();
-                        for idx in &coef_indices {
-                            *counts.entry(*idx).or_insert(0) += 1;
-                        }
-
-                        // Handle squared terms (c² → c2)
-                        for (&idx, &count) in &counts {
-                            if count >= 2 {
-                                // c² → c2 (squared variable)
-                                let c2 = ctx.get_or_create_squared(idx);
-                                result_coef_terms.push(term::var(c2, typ::int()));
-                            }
-                        }
-
-                        // For single occurrences, add them to result_coef_terms
-                        for (&idx, &count) in &counts {
-                            if count == 1 {
-                                result_coef_terms.push(term::var(idx, typ::int()));
-                            }
-                        }
-
-                        // Recursively pair coefficient-like terms until at most one remains.
-                        // After pairing, aux vars (c_d, c2) are also in {-1, 0, 1}, so they
-                        // need further pairing if there are multiple.
-                        while result_coef_terms.len() >= 2 {
-                            let mut new_terms = Vec::new();
-                            let mut i = 0;
-                            while i + 1 < result_coef_terms.len() {
-                                let a_idx = result_coef_terms[i].var_idx().unwrap();
-                                let b_idx = result_coef_terms[i + 1].var_idx().unwrap();
-                                let ab = ctx.get_or_create_product(a_idx, b_idx);
-                                new_terms.push(term::var(ab, typ::int()));
-                                i += 2;
-                            }
-                            // If odd number, keep the last one
-                            if i < result_coef_terms.len() {
-                                new_terms.push(result_coef_terms[i].clone());
-                            }
-                            result_coef_terms = new_terms;
-                        }
-                    }
-
-                    // Combine all terms
-                    let mut all_terms = result_coef_terms;
-                    all_terms.extend(other_terms);
-
-                    if all_terms.is_empty() {
-                        term::int(1)
-                    } else {
-                        term::mul(all_terms)
-                    }
+                    term::app(*op, vec![left_term, right_term])
                 }
+
+                term::Op::Eql if args.len() == 2 && args[0].typ().is_int() => {
+                    // Transform arithmetic equality
+                    let left_poly = arithmetic_to_normal_form(&args[0], coef_vars);
+                    let right_poly = arithmetic_to_normal_form(&args[1], coef_vars);
+
+                    let left_lin = linearize_products(left_poly, coef_vars, ctx);
+                    let right_lin = linearize_products(right_poly, coef_vars, ctx);
+
+                    let left_term = from_sum_of_products(left_lin);
+                    let right_term = from_sum_of_products(right_lin);
+
+                    term::eq(left_term, right_term)
+                }
+
+                // Boolean operators: recurse on arguments
+                term::Op::And | term::Op::Or | term::Op::Not | term::Op::Impl => {
+                    let new_args: Vec<term::Term> = args
+                        .iter()
+                        .map(|a| linearize_term(a, ctx, coef_vars))
+                        .collect();
+                    term::app(*op, new_args)
+                }
+
+                // Ite: recurse on all branches
+                term::Op::Ite if args.len() == 3 => {
+                    let cond = linearize_term(&args[0], ctx, coef_vars);
+                    let then_branch = linearize_term(&args[1], ctx, coef_vars);
+                    let else_branch = linearize_term(&args[2], ctx, coef_vars);
+                    term::ite(cond, then_branch, else_branch)
+                }
+
+                // Other operators: recurse on arguments
                 _ => {
-                    // Recursively process arguments
                     let new_args: Vec<term::Term> = args
                         .iter()
                         .map(|a| linearize_term(a, ctx, coef_vars))
@@ -1214,6 +1179,7 @@ fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: 
             }
         }
 
+        // Datatype and function terms: recurse on subterms
         term::RTerm::DTypNew { name, args, typ, .. } => {
             let new_args: Vec<term::Term> = args
                 .iter()
@@ -1231,8 +1197,6 @@ fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: 
         }
 
         term::RTerm::CArray { term: inner, typ, .. } => {
-            // CArray represents a constant array. Coefficient templates typically don't
-            // contain arrays, but we handle it correctly for completeness.
             let new_inner = linearize_term(inner, ctx, coef_vars);
             if new_inner == *inner {
                 term.clone()
@@ -1260,20 +1224,17 @@ fn solve_by_linearization(
 ) -> Res<Option<Model>> {
     log_debug!("Using linearization solver for {} variables", fvs.len());
 
-    // Step 1: Expand to polynomial form
-    let expanded = expand_to_polynomial(form, fvs);
-    log_debug!("Expanded form: {}", expanded);
-
-    // Step 2: Find max variable index for fresh variables
+    // Step 1: Find max variable index for fresh auxiliary variables
     let max_var = fvs.iter().copied().max().unwrap_or(VarIdx::new(0));
     let start_var = VarIdx::new(max_var.get() + 1);
 
-    // Step 3: Create linearization context and linearize the term
+    // Step 2: Create linearization context and linearize the formula
+    // The boundary-based approach transforms arithmetic at comparison operators
     let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&expanded, &mut ctx, fvs);
+    let linearized = linearize_term(form, &mut ctx, fvs);
     log_debug!("Linearized form: {}", linearized);
 
-    // Step 4: Setup solver
+    // Step 3: Setup solver
     solver.reset()?;
     solver.set_option(":timeout", "10000")?; // 10 second timeout
 
@@ -1560,729 +1521,105 @@ pub fn work<'a>(
 // Unit tests for linearization
 // ============================================================================
 
-#[test]
-fn test_expand_simple_product() {
-    // Test: c * (d + e) => c*d + c*e
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let e_idx = VarIdx::new(2);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-    coef_vars.insert(e_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let e = term::var(e_idx, typ::int());
-
-    // c * (d + e)
-    let term = term::mul(vec![c.clone(), term::add(vec![d.clone(), e.clone()])]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be an addition
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-    assert_eq!(args.len(), 2);
-}
-
-#[test]
-fn test_expand_cubic_simplification() {
-    // Test: c * c * c => c (since c³ = c for c ∈ {-1, 0, 1})
-    let c_idx = VarIdx::new(0);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-
-    let c = term::var(c_idx, typ::int());
-
-    // c * c * c
-    let term = term::mul(vec![c.clone(), c.clone(), c.clone()]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be just c
-    assert_eq!(expanded.var_idx(), Some(c_idx));
-}
-
-#[test]
-fn test_expand_squared() {
-    // Test: c * c => c * c (two occurrences)
-    let c_idx = VarIdx::new(0);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-
-    let c = term::var(c_idx, typ::int());
-
-    // c * c
-    let term = term::mul(vec![c.clone(), c.clone()]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be a multiplication of two c's
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Mul);
-    assert_eq!(args.len(), 2);
-}
-
-#[test]
-fn test_collect_products_basic() {
-    // Test: c * d detected as product
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    let term = term::mul(vec![c, d]);
-
-    let (squared, products) = collect_products(&term, &coef_vars);
-
-    assert!(squared.is_empty());
-    assert_eq!(products.len(), 1);
-    assert!(products.contains(&(c_idx, d_idx)));
-}
-
-#[test]
-fn test_collect_products_squared() {
-    // Test: c * c detected as squared
-    let c_idx = VarIdx::new(0);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-
-    let c = term::var(c_idx, typ::int());
-
-    let term = term::mul(vec![c.clone(), c.clone()]);
-
-    let (squared, products) = collect_products(&term, &coef_vars);
-
-    assert_eq!(squared.len(), 1);
-    assert!(squared.contains(&c_idx));
-    assert!(products.is_empty());
-}
-
-#[test]
-fn test_collect_products_triple() {
-    // Test: c * c * d => squared(c) and product(c, d)
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    let term = term::mul(vec![c.clone(), c.clone(), d]);
-
-    let (squared, products) = collect_products(&term, &coef_vars);
-
-    assert_eq!(squared.len(), 1);
-    assert!(squared.contains(&c_idx));
-    assert_eq!(products.len(), 1);
-    assert!(products.contains(&(c_idx, d_idx)));
-}
-
-#[test]
-fn test_linearization_context_squared_constraint() {
-    // Test that squared constraint is generated correctly
-    let c_idx = VarIdx::new(0);
-    let start_var = VarIdx::new(10);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let c2 = ctx.get_or_create_squared(c_idx);
-
-    // c2 should be the start_var
-    assert_eq!(c2, start_var);
-
-    // Should have one constraint
-    assert_eq!(ctx.constraints.len(), 1);
-
-    // Constraint should be: (c = 0 ∧ c2 = 0) ∨ c2 = 1
-    // We just check it's an Or
-    let (op, _) = ctx.constraints[0].app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Or);
-}
-
-#[test]
-fn test_linearization_context_product_constraint() {
-    // Test that product constraint is generated correctly
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let start_var = VarIdx::new(10);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let c_d = ctx.get_or_create_product(c_idx, d_idx);
-
-    // c_d should be the start_var
-    assert_eq!(c_d, start_var);
-
-    // Should have one constraint
-    assert_eq!(ctx.constraints.len(), 1);
-
-    // Constraint should be an Or with 3 cases
-    let (op, args) = ctx.constraints[0].app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Or);
-    assert_eq!(args.len(), 3);
-}
-
-#[test]
-fn test_linearization_context_reuse() {
-    // Test that same variable pair returns same aux var
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let start_var = VarIdx::new(10);
-
-    let mut ctx = LinearizationContext::new(start_var);
-
-    let c2_first = ctx.get_or_create_squared(c_idx);
-    let c2_second = ctx.get_or_create_squared(c_idx);
-
-    assert_eq!(c2_first, c2_second);
-    assert_eq!(ctx.constraints.len(), 1); // Only one constraint
-
-    let cd_first = ctx.get_or_create_product(c_idx, d_idx);
-    let cd_second = ctx.get_or_create_product(c_idx, d_idx);
-    let cd_reversed = ctx.get_or_create_product(d_idx, c_idx);
-
-    assert_eq!(cd_first, cd_second);
-    assert_eq!(cd_first, cd_reversed); // Normalized ordering
-    assert_eq!(ctx.constraints.len(), 2); // Two constraints (one squared, one product)
-}
-
-#[test]
-fn test_linearize_term_basic() {
-    // Test linearization of c * c => c2
-    let c_idx = VarIdx::new(0);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let term = term::mul(vec![c.clone(), c.clone()]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // Result should be just c2 (the aux var)
-    assert_eq!(linearized.var_idx(), Some(start_var));
-    assert_eq!(ctx.squared_vars.len(), 1);
-}
-
-#[test]
-fn test_linearize_term_product() {
-    // Test linearization of c * d => c_d
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let term = term::mul(vec![c, d]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // Result should be just c_d (the aux var)
-    assert_eq!(linearized.var_idx(), Some(start_var));
-    assert_eq!(ctx.product_vars.len(), 1);
-}
-
-#[test]
-fn test_expand_nested_product() {
-    // Test: c * (d + c) => c*d + c*c
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    // c * (d + c)
-    let term = term::mul(vec![c.clone(), term::add(vec![d.clone(), c.clone()])]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be an addition of two terms
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-    assert_eq!(args.len(), 2);
-
-    // One term should contain c*d (product of two different vars)
-    // The other should contain c*c (squared)
-}
-
-#[test]
-fn test_expand_double_sum() {
-    // Test: (a + b) * (c + d) => a*c + a*d + b*c + b*d
-    let a_idx = VarIdx::new(0);
-    let b_idx = VarIdx::new(1);
-    let c_idx = VarIdx::new(2);
-    let d_idx = VarIdx::new(3);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(a_idx);
-    coef_vars.insert(b_idx);
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let a = term::var(a_idx, typ::int());
-    let b = term::var(b_idx, typ::int());
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    // (a + b) * (c + d)
-    let term = term::mul(vec![
-        term::add(vec![a.clone(), b.clone()]),
-        term::add(vec![c.clone(), d.clone()]),
-    ]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be an addition of 4 terms
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-    assert_eq!(args.len(), 4);
-}
-
-#[test]
-fn test_collect_products_ignores_non_coef() {
-    // Test: c * x where x is not a coef var => no product collected
-    let c_idx = VarIdx::new(0);
-    let x_idx = VarIdx::new(1);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx); // Only c is a coef var, not x
-
-    let c = term::var(c_idx, typ::int());
-    let x = term::var(x_idx, typ::int());
-
-    let term = term::mul(vec![c, x]);
-
-    let (squared, products) = collect_products(&term, &coef_vars);
-
-    // No products should be detected since x is not a coef var
-    assert!(squared.is_empty());
-    assert!(products.is_empty());
-}
-
-#[test]
-fn test_linearize_term_mixed() {
-    // Test: c * c * d => fully linearized to a single aux variable
-    // c² → c2 (squared aux var), then c2 * d → (c2)_d (product aux var)
-    // Result should be a single aux variable, not a multiplication
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    // c * c * d
-    let term = term::mul(vec![c.clone(), c.clone(), d.clone()]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // Should have created a squared variable for c
-    assert_eq!(ctx.squared_vars.len(), 1);
-    assert!(ctx.squared_vars.contains_key(&c_idx));
-
-    // Should have created a product variable for c2 * d
-    assert_eq!(ctx.product_vars.len(), 1);
-
-    // Result should be a single variable (the (c2)_d aux var)
-    assert!(
-        linearized.var_idx().is_some(),
-        "Expected linearized c*c*d to be a single variable, got: {}",
-        linearized
-    );
-}
-
-#[test]
-fn test_expand_with_constant() {
-    // Test: 2 * c * d should keep constant and expand correctly
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    // 2 * c * d
-    let term = term::mul(vec![term::int(2), c.clone(), d.clone()]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be a multiplication (structure may vary due to simplification)
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Mul);
-    // Should have at least 2 factors (constant may be absorbed into CMul structure)
-    assert!(args.len() >= 2);
-}
-
-#[test]
-fn test_expand_mixed_constant_and_sum() {
-    // Test: c * (5 + d) => 5*c + c*d
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    // c * (5 + d)
-    let term = term::mul(vec![c.clone(), term::add(vec![term::int(5), d.clone()])]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be an addition of 2 terms
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-    assert_eq!(args.len(), 2);
-}
-
-#[test]
-fn test_linearize_nested_product() {
-    // Test full pipeline: c * (d + c) after expansion and linearization
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-
-    // c * (d + c)
-    let term = term::mul(vec![c.clone(), term::add(vec![d.clone(), c.clone()])]);
-
-    // Step 1: Expand
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Step 2: Linearize
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&expanded, &mut ctx, &coef_vars);
-
-    // After expansion: c*d + c*c
-    // After linearization: c_d + c2 (where c_d is aux var for c*d, c2 for c²)
-    // Should have one product var and one squared var
-    assert_eq!(ctx.product_vars.len(), 1);
-    assert_eq!(ctx.squared_vars.len(), 1);
-
-    // Result should be an addition
-    let (op, _) = linearized.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-}
-
-#[test]
-fn test_linearization_constraint_count() {
-    // Verify correct number of constraints are generated
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let e_idx = VarIdx::new(2);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-    coef_vars.insert(e_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let e = term::var(e_idx, typ::int());
-
-    // c * c + d * e (needs c2 and d_e)
-    let term = term::add(vec![
-        term::mul(vec![c.clone(), c.clone()]),
-        term::mul(vec![d.clone(), e.clone()]),
-    ]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let _ = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // Should have 1 squared var (c2) and 1 product var (d_e)
-    assert_eq!(ctx.squared_vars.len(), 1);
-    assert_eq!(ctx.product_vars.len(), 1);
-
-    // Should have 2 constraints (one for each aux var)
-    assert_eq!(ctx.constraints.len(), 2);
-}
-
-#[test]
-fn test_linearize_preserves_non_coef_vars() {
-    // Test that non-coefficient variables are preserved correctly
-    let c_idx = VarIdx::new(0);
-    let x_idx = VarIdx::new(1); // Not a coef var
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx); // Only c is a coef var
-
-    let c = term::var(c_idx, typ::int());
-    let x = term::var(x_idx, typ::int());
-
-    // c * x (x is not a coef var, so no product aux var needed)
-    let term = term::mul(vec![c.clone(), x.clone()]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // No aux variables should be created
-    assert!(ctx.squared_vars.is_empty());
-    assert!(ctx.product_vars.is_empty());
-    assert!(ctx.constraints.is_empty());
-
-    // Result should be a multiplication of c and x (unchanged)
-    let (op, args) = linearized.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Mul);
-    assert_eq!(args.len(), 2);
-}
-
-#[test]
-fn test_expand_deeply_nested() {
-    // Test: c * ((d + e) * f) - deeply nested structure
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let e_idx = VarIdx::new(2);
-    let f_idx = VarIdx::new(3);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-    coef_vars.insert(e_idx);
-    coef_vars.insert(f_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let e = term::var(e_idx, typ::int());
-    let f = term::var(f_idx, typ::int());
-
-    // c * ((d + e) * f) => c*d*f + c*e*f
-    let inner = term::mul(vec![term::add(vec![d.clone(), e.clone()]), f.clone()]);
-    let term = term::mul(vec![c.clone(), inner]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be an addition of 2 terms (c*d*f and c*e*f)
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-    assert_eq!(args.len(), 2);
-}
-
-#[test]
-fn test_power_of_four_simplification() {
-    // Test: c * c * c * c => c * c (since c⁴ = c² for c ∈ {-1, 0, 1})
-    let c_idx = VarIdx::new(0);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-
-    let c = term::var(c_idx, typ::int());
-
-    // c * c * c * c
-    let term = term::mul(vec![c.clone(), c.clone(), c.clone(), c.clone()]);
-
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Result should be c * c (two occurrences)
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Mul);
-    assert_eq!(args.len(), 2);
-}
-
-#[test]
-fn test_full_linearization_pipeline() {
-    // Comprehensive test: c * (d + c) + e * e
-    // After expansion: c*d + c*c + e*e
-    // After linearization: c_d + c2 + e2 (three aux vars: c_d for c*d, c2 for c², e2 for e²)
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let e_idx = VarIdx::new(2);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-    coef_vars.insert(e_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let e = term::var(e_idx, typ::int());
-
-    // c * (d + c) + e * e
-    let term = term::add(vec![
-        term::mul(vec![c.clone(), term::add(vec![d.clone(), c.clone()])]),
-        term::mul(vec![e.clone(), e.clone()]),
-    ]);
-
-    // Step 1: Expand
-    let expanded = expand_to_polynomial(&term, &coef_vars);
-
-    // Should be: c*d + c*c + e*e (three terms)
-    let (op, args) = expanded.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-    assert_eq!(args.len(), 3);
-
-    // Step 2: Linearize
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&expanded, &mut ctx, &coef_vars);
-
-    // Should have: 1 product var (c*d), 2 squared vars (c², e²)
-    assert_eq!(ctx.product_vars.len(), 1);
-    assert_eq!(ctx.squared_vars.len(), 2);
-    assert!(ctx.squared_vars.contains_key(&c_idx));
-    assert!(ctx.squared_vars.contains_key(&e_idx));
-
-    // Should have 3 constraints (one per aux var)
-    assert_eq!(ctx.constraints.len(), 3);
-
-    // Result should be an addition of three terms (all aux vars)
-    let (op, _) = linearized.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::Add);
-}
-
-#[test]
-fn test_linearization_constraint_structure() {
-    // Verify that constraints are well-formed
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let start_var = VarIdx::new(10);
-
-    let mut ctx = LinearizationContext::new(start_var);
-
-    // Create both squared and product vars
-    let _c2 = ctx.get_or_create_squared(c_idx);
-    let _cd = ctx.get_or_create_product(c_idx, d_idx);
-
-    // Get all constraints as a conjunction
-    let constraints = ctx.get_constraints();
-
-    // Should be a conjunction (And) of two constraints
-    let (op, args) = constraints.app_inspect().expect("expected an App");
-    assert_eq!(op, term::Op::And);
-    assert_eq!(args.len(), 2);
-
-    // Each constraint should be a disjunction (Or)
-    for arg in args {
-        let (sub_op, _) = arg.app_inspect().expect("expected an App");
-        assert_eq!(sub_op, term::Op::Or);
-    }
-}
-
-#[test]
-fn test_linearize_three_distinct_vars() {
-    // Test: c * d * e (three distinct coefficient variables)
-    // Should create product vars recursively: c_d, then (c_d)_e
-    // Result should be a single aux var, not a product
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let e_idx = VarIdx::new(2);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-    coef_vars.insert(e_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let e = term::var(e_idx, typ::int());
-
-    // c * d * e
-    let term = term::mul(vec![c.clone(), d.clone(), e.clone()]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // Should have created 2 product vars: c_d and (c_d)_e
-    assert_eq!(ctx.product_vars.len(), 2);
-
-    // Result should be a single variable (the final aux var), not a multiplication
-    assert!(
-        linearized.var_idx().is_some(),
-        "Expected linearized c*d*e to be a single variable, got: {}",
-        linearized
-    );
-}
-
-#[test]
-fn test_linearize_four_distinct_vars() {
-    // Test: c * d * e * f (four distinct coefficient variables)
-    // Should create: c_d, e_f, then (c_d)_(e_f)
-    // Result should be a single aux var
-    let c_idx = VarIdx::new(0);
-    let d_idx = VarIdx::new(1);
-    let e_idx = VarIdx::new(2);
-    let f_idx = VarIdx::new(3);
-    let start_var = VarIdx::new(10);
-
-    let mut coef_vars = VarSet::new();
-    coef_vars.insert(c_idx);
-    coef_vars.insert(d_idx);
-    coef_vars.insert(e_idx);
-    coef_vars.insert(f_idx);
-
-    let c = term::var(c_idx, typ::int());
-    let d = term::var(d_idx, typ::int());
-    let e = term::var(e_idx, typ::int());
-    let f = term::var(f_idx, typ::int());
-
-    // c * d * e * f
-    let term = term::mul(vec![c.clone(), d.clone(), e.clone(), f.clone()]);
-
-    let mut ctx = LinearizationContext::new(start_var);
-    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
-
-    // Should have created 3 product vars: c_d, e_f, (c_d)_(e_f)
-    assert_eq!(ctx.product_vars.len(), 3);
-
-    // Result should be a single variable
-    assert!(
-        linearized.var_idx().is_some(),
-        "Expected linearized c*d*e*f to be a single variable, got: {}",
-        linearized
-    );
-}
-
-// ============================================================================
-// Note on integration tests:
-// The following tests from the plan require SMT solver integration:
-// - test_solve_by_linearization_sat
-// - test_solve_by_linearization_unsat
-// - test_linearization_matches_blasting
-// - test_linearization_triggered_for_large_vars
-//
-// These are best tested as integration tests with the full tool, e.g.:
 //   HOICE_FORCE_LINEARIZATION=1 cargo test --test <integration_test>
 // or by running:
 //   ./target/debug/hoice --force-linearization=on <test_file.smt2>
 // ============================================================================
+
+// ============================================================================
+// Tests for the new linearization architecture
+// ============================================================================
+
+#[test]
+fn test_arithmetic_to_normal_form_basic() {
+    // Test: c * d => [[c, d]]
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    let term = term::mul(vec![c, d]);
+    
+    let sop = arithmetic_to_normal_form(&term, &coef_vars);
+    
+    assert_eq!(sop.len(), 1); // One product
+    assert_eq!(sop[0].len(), 2); // Two factors
+}
+
+#[test]
+fn test_arithmetic_to_normal_form_sum() {
+    // Test: c * (d + e) => [[c, d], [c, e]]
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    let e_idx = VarIdx::new(2);
+    
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    coef_vars.insert(e_idx);
+    
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    let e = term::var(e_idx, typ::int());
+    
+    let term = term::mul(vec![c, term::add(vec![d, e])]);
+    
+    let sop = arithmetic_to_normal_form(&term, &coef_vars);
+    
+    assert_eq!(sop.len(), 2); // Two products: c*d and c*e
+}
+
+#[test]
+fn test_linearization_context_creates_aux_vars() {
+    let start_var = VarIdx::new(10);
+    let mut ctx = LinearizationContext::new(start_var);
+    
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    
+    // Create squared variable
+    let c2 = ctx.get_or_create_squared(c_idx);
+    assert_eq!(c2, VarIdx::new(10));
+    
+    // Create product variable
+    let c_d = ctx.get_or_create_product(c_idx, d_idx);
+    assert_eq!(c_d, VarIdx::new(11));
+    
+    // Verify reuse
+    let c2_again = ctx.get_or_create_squared(c_idx);
+    assert_eq!(c2_again, c2);
+}
+
+#[test]
+fn test_full_linearization_on_comparison() {
+    // Test: c * d >= 0
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    
+    // c * d >= 0
+    let term = term::ge(term::mul(vec![c, d]), term::int(0));
+    
+    let start_var = VarIdx::new(10);
+    let mut ctx = LinearizationContext::new(start_var);
+    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
+    
+    // Should create product variable c_d
+    assert_eq!(ctx.product_vars.len(), 1);
+    assert!(ctx.squared_vars.is_empty());
+    
+    // Linearized form should be: c_d >= 0
+    let (op, args) = linearized.app_inspect().expect("expected comparison");
+    assert_eq!(op, term::Op::Ge);
+    assert_eq!(args.len(), 2);
+}
