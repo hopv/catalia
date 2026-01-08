@@ -24,7 +24,7 @@ cargo test --lib solve_by_blasting
 | File | Purpose |
 |------|---------|
 | `src/absadt.rs` | CEGAR loop orchestration, dump points |
-| `src/absadt/enc.rs` | ADT→Int encoding semantics |
+| `src/absadt/enc.rs` | ADT → Int encoding semantics |
 | `src/absadt/learn.rs` | Learning templates, scheduling, model collection |
 | `src/absadt/chc.rs` | CEX (counterexample) format |
 
