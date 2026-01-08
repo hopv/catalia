@@ -1162,6 +1162,8 @@ pub struct Config {
     pub no_eldarica: bool,
     /// Use Eldarica instead of Spacer for counterexample generation.
     pub use_eldarica_cex: bool,
+    /// Force use of linearization solver for [-1, 1] templates.
+    pub force_linearization: bool,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1314,6 +1316,9 @@ impl Config {
         let use_eldarica_cex = std::env::var("HOICE_USE_ELDARICA_CEX")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
             .unwrap_or_else(|_| bool_of_matches(&matches, "use_eldarica_cex"));
+        let force_linearization = std::env::var("HOICE_FORCE_LINEARIZATION")
+            .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
+            .unwrap_or_else(|_| bool_of_matches(&matches, "force_linearization"));
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
@@ -1342,6 +1347,7 @@ impl Config {
             no_hoice,
             no_eldarica,
             use_eldarica_cex,
+            force_linearization,
             instance,
             preproc,
             solver,
@@ -1516,6 +1522,17 @@ impl Config {
                 Arg::new("use_eldarica_cex")
                     .long("--eldarica-cex")
                     .help("use Eldarica instead of Spacer for counterexample generation")
+                    .validator(bool_validator)
+                    .value_name(bool_format)
+                    .default_value("off")
+                    .takes_value(true)
+                    .number_of_values(1)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("force_linearization")
+                    .long("--force-linearization")
+                    .help("force linearization solver for [-1,1] templates (debugging)")
                     .validator(bool_validator)
                     .value_name(bool_format)
                     .default_value("off")
