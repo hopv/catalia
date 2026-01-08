@@ -37,7 +37,7 @@ Located in `hoice_out/absadt/`:
 ## Core Concepts
 
 - **Encoder/Catamorphism**: Maps each ADT constructor to an `Approx` producing an integer vector
-- **n_params/n_enc**: Number of integer components (features) for an ADT encoding
+- **n_params/n_encs**: Number of integer components (features) for an ADT encoding
 - **Approx**: `{ args: VarInfos, terms: Vec<Term> }` - a lambda `\args. (terms...)`
 - **CEX**: ADT-level SMT constraint `forall vars. term` from LIA counterexample
 - **Epoch**: One CEGAR iteration (encode → backend solve → cex → check → learn/refine)
