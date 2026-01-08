@@ -150,19 +150,35 @@ pub trait SubConf {
 make_conf! {
     /// Solver configuration.
     SmtConf {
-        z3_cmd, conf: SolverConf {
-            help "Sets the command used to call z3.",
+        solver_cmd, solver_type: String {
+            help "Sets the SMT solver type (z3 or cvc5).",
             long_help "\
-                Specifies which command to run to spawn z3. Hoice automatically launches it in \
-                *interactive* mode, so there's no need to specify `-in`.\
+                Specifies which SMT solver to use: 'z3' or 'cvc5'. \
+                Note: This only affects the SMT solver for checking satisfiability. \
+                Z3's Spacer is still used for CHC solving and cannot be replaced.\
             ",
-            long "--z3",
+            long "--solver",
             default "z3",
             takes_val,
             val_nb 1,
         } {
+            |mtch| mtch.to_string()
+        }
+        z3_cmd, conf: SolverConf {
+            help "Sets the command used to call the SMT solver.",
+            long_help "\
+                Specifies which command to run to spawn the SMT solver. Hoice automatically launches it in \
+                *interactive* mode, so there's no need to specify `-in`. \
+                The actual solver binary depends on --solver option.\
+            ",
+            long "--smt-cmd",
+            default "",
+            takes_val,
+            val_nb 1,
+        } {
             |mtch| {
-                let mut conf = SolverConf::z3(mtch);
+                // This will be set properly in the new() method
+                let mut conf = SolverConf::z3("z3");
                 conf.models();
                 conf
             }
@@ -193,6 +209,54 @@ make_conf! {
         /// Actual, `rsmt2` solver configuration.
         pub fn conf(&self) -> SolverConf {
             self.conf.clone()
+        }
+
+        /// Creates a new SmtConf with proper solver configuration.
+        /// Call this instead of new() to properly handle CVC5/Z3 selection.
+        pub fn new_with_solver_selection(matches: &Matches) -> Self {
+            // First, get the solver type
+            let solver_type = matches
+                .value_of("solver_cmd")
+                .unwrap_or("z3")
+                .to_string();
+
+            // Get the command override if provided
+            let cmd_override = matches.value_of("z3_cmd").unwrap_or("");
+
+            // Determine the actual command to use
+            let (cmd, use_cvc5) = if solver_type == "cvc5" || solver_type == "CVC5" {
+                let cmd = if cmd_override.is_empty() {
+                    "cvc5".to_string()
+                } else {
+                    cmd_override.to_string()
+                };
+                (cmd, true)
+            } else {
+                let cmd = if cmd_override.is_empty() {
+                    "z3".to_string()
+                } else {
+                    cmd_override.to_string()
+                };
+                (cmd, false)
+            };
+
+            // Create the solver configuration
+            let mut conf = if use_cvc5 {
+                // Use CVC4 configuration for CVC5 (they share the same SMT-LIB2 interface)
+                SolverConf::cvc4(&cmd)
+            } else {
+                SolverConf::z3(&cmd)
+            };
+            conf.models();
+
+            // Get the log setting
+            let log = bool_of_match(matches.value_of("log_smt").unwrap_or("no"));
+
+            Self {
+                solver_type,
+                conf,
+                log,
+            }
         }
 
         /// Spawns a solver.
@@ -1321,7 +1385,7 @@ impl Config {
 
         let instance = InstanceConf::new(&matches);
         let preproc = PreprocConf::new(&matches);
-        let solver = SmtConf::new(&matches);
+        let solver = SmtConf::new_with_solver_selection(&matches);
         let ice = IceConf::new(&matches);
         let teacher = TeacherConf::new(&matches);
 
