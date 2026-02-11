@@ -45,17 +45,16 @@ pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::Resoluti
 where
     I: Instance,
 {
-    let mut eld_err = false;
     if !conf.no_eldarica {
         match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false) {
             // Eldarica determined SAT
             Ok(true) => return Ok(either::Left(())),
             // Eldarica determined UNSAT
             Ok(false) =>
-                return Ok(either::Right((hyper_res::ResolutionProof::new(), eld_err))),
+                return Ok(either::Right((hyper_res::ResolutionProof::new(), false))),
             Err(err) => {
-                eld_err = true;
                 log_info!("Eldarica failed with {}", err);
+                return Ok(either::Right((hyper_res::ResolutionProof::new(), true)));
             },
         }
     }
@@ -68,6 +67,5 @@ where
             return Ok(either::Left(()));
         }
     }
-
-    Ok(either::Right((hyper_res::ResolutionProof::new(), eld_err)))
+    Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
 }
