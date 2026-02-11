@@ -1194,7 +1194,7 @@ impl<'a> AbsInstance<'a> {
         // since eld seems better, we first try eld with timeout
         let (b, eldarica_error) = super::chc_solver::portfolio(self)?
             .either(
-                |_| (true, None),
+                |_| (true, false),
                 |(_, eld_err)| (false, eld_err)
             );
         if b {
@@ -1202,7 +1202,7 @@ impl<'a> AbsInstance<'a> {
         }
 
         // Use Eldarica or Spacer for counterexample generation based on config
-        let res = if conf.use_eldarica_cex && eldarica_error.is_none() {
+        let res = if conf.use_eldarica_cex && !eldarica_error {
             log_debug!("Using Eldarica for counterexample generation");
             super::chc_solver::run_eldarica_cex(self, None)?
         } else {

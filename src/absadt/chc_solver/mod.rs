@@ -41,20 +41,22 @@ pub trait CHCSolver {
     fn check_sat(self) -> Res<bool>;
 }
 
-pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::ResolutionProof, Option<()>)>>
+pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
 where
     I: Instance,
 {
-    let mut eld_err = None;
+    let mut eld_err = false;
     if !conf.no_eldarica {
-        let b = run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false)
-            .map_err(|e| {
-                eld_err = Some(());
-                log_info!("Eldarica failed with {}", e);
-            })
-            .unwrap_or(false);
-        if b {
-            return Ok(either::Left(()));
+        match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false) {
+            // Eldarica determined SAT
+            Ok(true) => return Ok(either::Left(())),
+            // Eldarica determined UNSAT
+            Ok(false) =>
+                return Ok(either::Right((hyper_res::ResolutionProof::new(), eld_err))),
+            Err(err) => {
+                eld_err = true;
+                log_info!("Eldarica failed with {}", err);
+            },
         }
     }
 
