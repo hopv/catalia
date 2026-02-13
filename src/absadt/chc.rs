@@ -917,13 +917,8 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
         }
     }
 
-    // Validate unresolved root nodes. Spacer may produce wrapper root nodes
-    // (e.g., query!1 wrapping query!0 via an internal clause like
-    // (=> query!0 query!1)). For each unresolved root, recursively traverse
-    // its children and verify that every path reaches a well-formed node
-    // (one that exists in `nodes`). If an unresolved root has no tag child
-    // but all paths through its children reach well-formed nodes, it is a
-    // legitimate wrapper and can be skipped.
+    // Validate unresolved root nodes: verify that every path from an
+    // unresolved root eventually reaches a tagged root node.
     if !unresolved_roots.is_empty() {
         // Build a lookup from node id to children for unresolved roots
         let unresolved_map: HashMap<usize, &Vec<usize>> = unresolved_roots
@@ -931,22 +926,16 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
             .map(|(id, children)| (*id, children))
             .collect();
 
-        // Check that all paths from an unresolved root reach well-formed
-        // nodes. Returns true if the node is well-formed (in `nodes`) or is
-        // an unresolved root whose children all recursively reach well-formed
-        // nodes.
-        //
-        // `visiting` tracks the current DFS path (not all previously visited
-        // nodes) to detect cycles. Nodes are removed on backtrack so that
-        // diamond patterns (multiple paths converging on the same node) are
-        // handled correctly.
+        // Check that all paths from an unresolved root eventually reach
+        // a tagged root node. `visiting` tracks the current DFS path to
+        // detect cycles.
         fn reaches_well_formed(
             id: usize,
-            nodes: &HashMap<usize, Node>,
+            roots: &HashSet<usize>,
             unresolved_map: &HashMap<usize, &Vec<usize>>,
             visiting: &mut HashSet<usize>,
         ) -> bool {
-            if nodes.contains_key(&id) {
+            if roots.contains(&id) {
                 return true;
             }
             if !visiting.insert(id) {
@@ -956,7 +945,7 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
             let result = match unresolved_map.get(&id) {
                 Some(children) => children
                     .iter()
-                    .all(|c| reaches_well_formed(*c, nodes, unresolved_map, visiting)),
+                    .all(|c| reaches_well_formed(*c, roots, unresolved_map, visiting)),
                 None => false,
             };
             visiting.remove(&id);
@@ -964,29 +953,15 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
         }
 
         if roots.is_empty() {
-            // No tagged root was found. If there is exactly one unresolved
-            // root and it is well-formed, use its children as roots (original
-            // Spacer path where query node has no tag).
-            if unresolved_roots.len() == 1 {
-                let (_, ref children) = unresolved_roots[0];
-                let mut visited = HashSet::new();
-                let ok = children.iter().all(|c| {
-                    reaches_well_formed(*c, &nodes, &unresolved_map, &mut visited)
-                });
-                if !ok {
-                    bail!("hyper resolution is ill-structured")
-                }
-                roots = children.clone();
-            } else {
-                bail!("hyper resolution is ill-structured")
-            }
+            bail!("hyper resolution is ill-structured: no tagged root found")
         } else {
-            // We already have tagged roots. Verify every unresolved root is a
-            // legitimate wrapper whose children all reach well-formed nodes.
+            // Verify every unresolved root is a wrapper whose children
+            // all reach tagged root nodes.
+            let roots_set: HashSet<usize> = roots.iter().copied().collect();
             for (_, children) in &unresolved_roots {
                 let mut visited = HashSet::new();
                 let ok = children.iter().all(|c| {
-                    reaches_well_formed(*c, &nodes, &unresolved_map, &mut visited)
+                    reaches_well_formed(*c, &roots_set, &unresolved_map, &mut visited)
                 });
                 if !ok {
                     bail!("hyper resolution is ill-structured")
