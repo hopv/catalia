@@ -935,25 +935,32 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
         // nodes. Returns true if the node is well-formed (in `nodes`) or is
         // an unresolved root whose children all recursively reach well-formed
         // nodes.
+        //
+        // `visiting` tracks the current DFS path (not all previously visited
+        // nodes) to detect cycles. Nodes are removed on backtrack so that
+        // diamond patterns (multiple paths converging on the same node) are
+        // handled correctly.
         fn reaches_well_formed(
             id: usize,
             nodes: &HashMap<usize, Node>,
             unresolved_map: &HashMap<usize, &Vec<usize>>,
-            visited: &mut HashSet<usize>,
+            visiting: &mut HashSet<usize>,
         ) -> bool {
             if nodes.contains_key(&id) {
                 return true;
             }
-            if !visited.insert(id) {
+            if !visiting.insert(id) {
                 // Cycle detected — not well-formed
                 return false;
             }
-            match unresolved_map.get(&id) {
+            let result = match unresolved_map.get(&id) {
                 Some(children) => children
                     .iter()
-                    .all(|c| reaches_well_formed(*c, nodes, unresolved_map, visited)),
+                    .all(|c| reaches_well_formed(*c, nodes, unresolved_map, visiting)),
                 None => false,
-            }
+            };
+            visiting.remove(&id);
+            result
         }
 
         if roots.is_empty() {
@@ -1502,4 +1509,33 @@ fn test_decode_tag_ill_formed_wrapper_rejected() {
 
     let proof = ResolutionProof { nodes };
     assert!(decode_tag(proof).is_err());
+}
+
+/// Test diamond pattern: two unresolved wrappers share a common child.
+/// A -> [B, C], B -> [D], C -> [D], D is well-formed.
+/// This must not be rejected as a false cycle.
+#[test]
+fn test_decode_tag_diamond_pattern() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    let nodes = vec![
+        Node::new(10, "tag!0".to_string(), vec![], vec![]),
+        // D: well-formed node (has tag child)
+        Node::new(5, "P".to_string(), vec![V::Int(0)], vec![10]),
+        Node::new(11, "tag!1".to_string(), vec![], vec![]),
+        // query!0: tagged root with P child
+        Node::new(4, "query!0".to_string(), vec![V::Int(0)], vec![5, 11]),
+        // B: unresolved wrapper -> query!0
+        Node::new(3, "query!1".to_string(), vec![], vec![4]),
+        // C: unresolved wrapper -> query!0 (same child as B)
+        Node::new(2, "query!2".to_string(), vec![], vec![4]),
+        // A: unresolved wrapper -> [B, C]
+        Node::new(1, "query!3".to_string(), vec![], vec![3, 2]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    let tree = decode_tag(proof).unwrap();
+
+    assert_eq!(tree.roots.len(), 1);
+    assert_eq!(tree.roots[0], 4);
 }
