@@ -904,12 +904,18 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
                 assert!(r.is_none())
             }
             None => {
-                // For Spacer, the query node doesn't have a tag
-                if roots.len() > 0 || !is_root_node(&n.head) {
-                    // case where there are multiple entries
+                if !is_root_node(&n.head) {
                     bail!("hyper resolution is ill-structured")
                 }
-                roots = n.children.iter().copied().collect()
+                // For Spacer, the query node doesn't have a tag.
+                // Spacer may also generate wrapper root nodes (e.g., query!1
+                // wrapping query!0 via an internal clause like
+                // (=> query!0 query!1)). These wrappers have no tag child.
+                // If roots are already set from a properly tagged query node,
+                // skip the wrapper.
+                if roots.is_empty() {
+                    roots = n.children.iter().copied().collect()
+                }
             }
         }
     }
@@ -1341,4 +1347,35 @@ fn test_expansion() {
 
     let cex = my_instance.get_n_expansion(3);
     println!("{}", cex);
+}
+
+/// Test that decode_tag handles Spacer's double-query proof structure
+/// where query!1 wraps query!0 via (=> query!0 query!1).
+#[test]
+fn test_decode_tag_double_query() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    // Simulate the proof structure from the bug:
+    //   query!0 (tagged, has tag!12 child) -> ... -> actual proof nodes
+    //   query!1 (wrapper, no tag child) -> query!0
+    let nodes = vec![
+        // tag!0: clause 0 (a fact clause)
+        Node::new(4, "tag!0".to_string(), vec![], vec![]),
+        // P(0): derived from clause 0, child is tag!0
+        Node::new(3, "P".to_string(), vec![V::Int(0)], vec![4]),
+        // tag!1: clause 1 (query clause)
+        Node::new(2, "tag!1".to_string(), vec![], vec![]),
+        // query!0: the actual query node, has tag!1 child and P child
+        Node::new(1, "query!0".to_string(), vec![V::Int(0)], vec![3, 2]),
+        // query!1: Spacer wrapper, no tag child, only query!0 child
+        Node::new(0, "query!1".to_string(), vec![], vec![1]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    let tree = decode_tag(proof).unwrap();
+
+    // The tree should have one root
+    assert_eq!(tree.roots.len(), 1);
+    // The root should be query!0 (node 1), not query!1
+    assert_eq!(tree.roots[0], 1);
 }
