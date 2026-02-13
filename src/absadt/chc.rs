@@ -907,14 +907,23 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
                 if !is_root_node(&n.head) {
                     bail!("hyper resolution is ill-structured")
                 }
-                // For Spacer, the query node doesn't have a tag.
-                // Spacer may also generate wrapper root nodes (e.g., query!1
-                // wrapping query!0 via an internal clause like
-                // (=> query!0 query!1)). These wrappers have no tag child.
-                // If roots are already set from a properly tagged query node,
-                // skip the wrapper.
                 if roots.is_empty() {
+                    // For Spacer, the query node doesn't have a tag.
+                    // Use its children as roots.
                     roots = n.children.iter().copied().collect()
+                } else {
+                    // Spacer may generate wrapper root nodes (e.g., query!1
+                    // wrapping query!0 via an internal clause like
+                    // (=> query!0 query!1)). Verify this is a legitimate
+                    // wrapper: all its children must be existing well-formed
+                    // root nodes.
+                    let is_wrapper = n.children.iter().all(|child_id| {
+                        roots.contains(child_id)
+                    });
+                    if !is_wrapper {
+                        bail!("hyper resolution is ill-structured")
+                    }
+                    // Wrapper confirmed; the existing roots are correct.
                 }
             }
         }
@@ -1378,4 +1387,24 @@ fn test_decode_tag_double_query() {
     assert_eq!(tree.roots.len(), 1);
     // The root should be query!0 (node 1), not query!1
     assert_eq!(tree.roots[0], 1);
+}
+
+/// Test that decode_tag rejects an ill-formed wrapper root whose children
+/// are not established roots.
+#[test]
+fn test_decode_tag_ill_formed_wrapper_rejected() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    // query!0 is a proper root, but query!1 references a non-root child (99)
+    let nodes = vec![
+        Node::new(4, "tag!0".to_string(), vec![], vec![]),
+        Node::new(3, "P".to_string(), vec![V::Int(0)], vec![4]),
+        Node::new(2, "tag!1".to_string(), vec![], vec![]),
+        Node::new(1, "query!0".to_string(), vec![V::Int(0)], vec![3, 2]),
+        // Ill-formed wrapper: child 99 is not an established root
+        Node::new(0, "query!1".to_string(), vec![], vec![99]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    assert!(decode_tag(proof).is_err());
 }
