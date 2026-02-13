@@ -2,3 +2,4 @@
 /src/common/revision.rs
 .vscode
 .DS_Store
+/hoice_out/

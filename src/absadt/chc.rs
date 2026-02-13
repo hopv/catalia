@@ -888,6 +888,11 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
 
     let mut roots = Vec::new();
     let mut nodes = HashMap::new();
+    // Root-like nodes (query!/FALSE) where tr_from_hyper_res returned None,
+    // i.e. they have no tag child. These may be Spacer-generated wrapper
+    // nodes (e.g., query!1 wrapping query!0). We defer their validation
+    // until after all nodes are processed.
+    let mut unresolved_roots: Vec<(usize, Vec<usize>)> = Vec::new();
     for n in res.nodes.iter() {
         if n.head.starts_with("tag!") {
             continue;
@@ -904,15 +909,67 @@ pub fn decode_tag(res: ResolutionProof) -> Res<CallTree> {
                 assert!(r.is_none())
             }
             None => {
-                // For Spacer, the query node doesn't have a tag
-                if roots.len() > 0 || !is_root_node(&n.head) {
-                    // case where there are multiple entries
+                if !is_root_node(&n.head) {
                     bail!("hyper resolution is ill-structured")
                 }
-                roots = n.children.iter().copied().collect()
+                unresolved_roots.push((id, n.children.clone()));
             }
         }
     }
+
+    // Validate unresolved root nodes: verify that every path from an
+    // unresolved root eventually reaches a tagged root node.
+    if !unresolved_roots.is_empty() {
+        // Build a lookup from node id to children for unresolved roots
+        let unresolved_map: HashMap<usize, &Vec<usize>> = unresolved_roots
+            .iter()
+            .map(|(id, children)| (*id, children))
+            .collect();
+
+        // Check that all paths from an unresolved root eventually reach
+        // a tagged root node. `visiting` tracks the current DFS path to
+        // detect cycles.
+        fn reaches_well_formed(
+            id: usize,
+            roots: &HashSet<usize>,
+            unresolved_map: &HashMap<usize, &Vec<usize>>,
+            visiting: &mut HashSet<usize>,
+        ) -> bool {
+            if roots.contains(&id) {
+                return true;
+            }
+            if !visiting.insert(id) {
+                // Cycle detected — not well-formed
+                return false;
+            }
+            let result = match unresolved_map.get(&id) {
+                Some(children) => children
+                    .iter()
+                    .all(|c| reaches_well_formed(*c, roots, unresolved_map, visiting)),
+                None => false,
+            };
+            visiting.remove(&id);
+            result
+        }
+
+        if roots.is_empty() {
+            bail!("hyper resolution is ill-structured: no tagged root found")
+        } else {
+            // Verify every unresolved root is a wrapper whose children
+            // all reach tagged root nodes.
+            let roots_set: HashSet<usize> = roots.iter().copied().collect();
+            for (_, children) in &unresolved_roots {
+                let mut visited = HashSet::new();
+                let ok = children.iter().all(|c| {
+                    reaches_well_formed(*c, &roots_set, &unresolved_map, &mut visited)
+                });
+                if !ok {
+                    bail!("hyper resolution is ill-structured")
+                }
+            }
+        }
+    }
+
     if roots.len() == 0 {
         roots = res.get_roots().map(|node| node.id).collect();
         assert_eq!(roots.len(), 1);
@@ -1341,4 +1398,119 @@ fn test_expansion() {
 
     let cex = my_instance.get_n_expansion(3);
     println!("{}", cex);
+}
+
+/// Test that decode_tag handles Spacer's double-query proof structure
+/// where query!1 wraps query!0 via (=> query!0 query!1).
+#[test]
+fn test_decode_tag_double_query() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    // query!0 (tagged) -> P(0), query!1 (wrapper) -> query!0
+    let nodes = vec![
+        Node::new(4, "tag!0".to_string(), vec![], vec![]),
+        Node::new(3, "P".to_string(), vec![V::Int(0)], vec![4]),
+        Node::new(2, "tag!1".to_string(), vec![], vec![]),
+        Node::new(1, "query!0".to_string(), vec![V::Int(0)], vec![3, 2]),
+        Node::new(0, "query!1".to_string(), vec![], vec![1]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    let tree = decode_tag(proof).unwrap();
+
+    assert_eq!(tree.roots.len(), 1);
+    assert_eq!(tree.roots[0], 1);
+}
+
+/// Same as above but with reversed node order: query!1 appears before
+/// query!0 in the node list, so the wrapper is encountered before the
+/// tagged root.
+#[test]
+fn test_decode_tag_double_query_reversed_order() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    let nodes = vec![
+        Node::new(4, "tag!0".to_string(), vec![], vec![]),
+        Node::new(2, "tag!1".to_string(), vec![], vec![]),
+        // wrapper first
+        Node::new(0, "query!1".to_string(), vec![], vec![1]),
+        // tagged root second
+        Node::new(3, "P".to_string(), vec![V::Int(0)], vec![4]),
+        Node::new(1, "query!0".to_string(), vec![V::Int(0)], vec![3, 2]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    let tree = decode_tag(proof).unwrap();
+
+    assert_eq!(tree.roots.len(), 1);
+    assert_eq!(tree.roots[0], 1);
+}
+
+/// Test chained wrappers: query!2 -> query!1 -> query!0 (tagged).
+#[test]
+fn test_decode_tag_chained_wrappers() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    let nodes = vec![
+        Node::new(4, "tag!0".to_string(), vec![], vec![]),
+        Node::new(3, "P".to_string(), vec![V::Int(0)], vec![4]),
+        Node::new(2, "tag!1".to_string(), vec![], vec![]),
+        Node::new(1, "query!0".to_string(), vec![V::Int(0)], vec![3, 2]),
+        Node::new(10, "query!1".to_string(), vec![], vec![1]),
+        Node::new(20, "query!2".to_string(), vec![], vec![10]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    let tree = decode_tag(proof).unwrap();
+
+    assert_eq!(tree.roots.len(), 1);
+    assert_eq!(tree.roots[0], 1);
+}
+
+/// Test that decode_tag rejects a wrapper root whose children do not
+/// reach any well-formed node.
+#[test]
+fn test_decode_tag_ill_formed_wrapper_rejected() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    let nodes = vec![
+        Node::new(4, "tag!0".to_string(), vec![], vec![]),
+        Node::new(3, "P".to_string(), vec![V::Int(0)], vec![4]),
+        Node::new(2, "tag!1".to_string(), vec![], vec![]),
+        Node::new(1, "query!0".to_string(), vec![V::Int(0)], vec![3, 2]),
+        // child 99 does not exist anywhere
+        Node::new(0, "query!1".to_string(), vec![], vec![99]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    assert!(decode_tag(proof).is_err());
+}
+
+/// Test diamond pattern: two unresolved wrappers share a common child.
+/// A -> [B, C], B -> [D], C -> [D], D is well-formed.
+/// This must not be rejected as a false cycle.
+#[test]
+fn test_decode_tag_diamond_pattern() {
+    use super::hyper_res::{Node, ResolutionProof, V};
+
+    let nodes = vec![
+        Node::new(10, "tag!0".to_string(), vec![], vec![]),
+        // D: well-formed node (has tag child)
+        Node::new(5, "P".to_string(), vec![V::Int(0)], vec![10]),
+        Node::new(11, "tag!1".to_string(), vec![], vec![]),
+        // query!0: tagged root with P child
+        Node::new(4, "query!0".to_string(), vec![V::Int(0)], vec![5, 11]),
+        // B: unresolved wrapper -> query!0
+        Node::new(3, "query!1".to_string(), vec![], vec![4]),
+        // C: unresolved wrapper -> query!0 (same child as B)
+        Node::new(2, "query!2".to_string(), vec![], vec![4]),
+        // A: unresolved wrapper -> [B, C]
+        Node::new(1, "query!3".to_string(), vec![], vec![3, 2]),
+    ];
+
+    let proof = ResolutionProof { nodes };
+    let tree = decode_tag(proof).unwrap();
+
+    assert_eq!(tree.roots.len(), 1);
+    assert_eq!(tree.roots[0], 4);
 }
