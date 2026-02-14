@@ -738,6 +738,556 @@ fn solve_by_blasting(
     search(form, &vars, 0, min, max, &mut model)
 }
 
+// ============================================================================
+// Linearization solver for [-1, 1] coefficient templates
+// ============================================================================
+
+use std::collections::{HashMap, HashSet};
+
+/// Intermediate representation for arithmetic terms: either a constant or a variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConstOrVar {
+    Const(i64),
+    Var(VarIdx),
+}
+
+/// Normalized representation of arithmetic as sum-of-products: Vec<Vec<ConstOrVar>>.
+/// - Inner Vec: represents a product term (e.g., [3, x, y] = 3×x×y)
+/// - Outer Vec: represents a sum (e.g., [[3, x, y], [y, 2, y]] = 3×x×y + y×2×y)
+type SumOfProducts = Vec<Vec<ConstOrVar>>;
+
+/// Parses an arithmetic term into normalized sum-of-products form.
+///
+/// Applies c³ = c simplification for coefficient variables (since c ∈ {-1, 0, 1}).
+///
+/// Examples:
+/// - `c * (d + e)` → `[[c, d], [c, e]]` (represents c*d + c*e)
+/// - `(a + b) * (c + d)` → `[[a, c], [a, d], [b, c], [b, d]]`
+/// - `c * c * c` → `[[c]]` (cubic simplification)
+fn arithmetic_to_normal_form(term: &term::Term, coef_vars: &VarSet) -> SumOfProducts {
+    match term.get() {
+        term::RTerm::Var(_, idx) => {
+            // Single variable becomes a product with one element
+            vec![vec![ConstOrVar::Var(*idx)]]
+        }
+
+        term::RTerm::Cst(val) => {
+            if let Ok(Some(i)) = val.get().to_int() {
+                let i_i64: i64 = i.to_string().parse().expect("integer too large for i64");
+                vec![vec![ConstOrVar::Const(i_i64)]]
+            } else {
+                panic!("linearization: non-integer constant in arithmetic context")
+            }
+        }
+
+        term::RTerm::App { op, args, .. } => match op {
+            term::Op::Add => {
+                // Addition: concatenate all sub-terms' sum-of-products
+                let mut result = Vec::new();
+                for arg in args {
+                    result.extend(arithmetic_to_normal_form(arg, coef_vars));
+                }
+                result
+            }
+
+            term::Op::Mul | term::Op::CMul => {
+                // Multiplication: Cartesian product of all sub-terms
+                let sub_products: Vec<SumOfProducts> = args
+                    .iter()
+                    .map(|a| arithmetic_to_normal_form(a, coef_vars))
+                    .collect();
+
+                multiply_sum_of_products(&sub_products, coef_vars)
+            }
+
+            term::Op::Sub => {
+                // Subtraction: a - b = a + (-1)*b
+                if args.len() == 1 {
+                    // Unary minus: -a = (-1)*a
+                    let sub = arithmetic_to_normal_form(&args[0], coef_vars);
+                    multiply_by_constant(sub, -1)
+                } else {
+                    // Binary or n-ary: a - b - c = a + (-1)*b + (-1)*c
+                    let mut result = arithmetic_to_normal_form(&args[0], coef_vars);
+                    for arg in &args[1..] {
+                        let negated = multiply_by_constant(
+                            arithmetic_to_normal_form(arg, coef_vars),
+                            -1,
+                        );
+                        result.extend(negated);
+                    }
+                    result
+                }
+            }
+
+            _ => panic!("linearization: unexpected operator {:?} in arithmetic context", op),
+        },
+
+        _ => panic!("linearization: unexpected term type in arithmetic context"),
+    }
+}
+
+/// Multiplies a list of sum-of-products using Cartesian product.
+/// Applies c³ = c simplification for coefficient variables.
+fn multiply_sum_of_products(
+    sum_of_products_list: &[SumOfProducts],
+    coef_vars: &VarSet,
+) -> SumOfProducts {
+    if sum_of_products_list.is_empty() {
+        return vec![vec![ConstOrVar::Const(1)]];
+    }
+
+    let mut result = sum_of_products_list[0].clone();
+
+    for sop in &sum_of_products_list[1..] {
+        let mut new_result = Vec::new();
+        for prod1 in &result {
+            for prod2 in sop {
+                let mut combined = prod1.clone();
+                combined.extend(prod2.clone());
+                // Apply c³ = c simplification
+                combined = simplify_product(combined, coef_vars);
+                new_result.push(combined);
+            }
+        }
+        result = new_result;
+    }
+
+    result
+}
+
+/// Multiplies a sum-of-products by a constant.
+fn multiply_by_constant(mut sop: SumOfProducts, constant: i64) -> SumOfProducts {
+    for product in &mut sop {
+        product.insert(0, ConstOrVar::Const(constant));
+    }
+    sop
+}
+
+/// Simplifies a product by applying c³ = c for coefficient variables.
+/// For coefficient variables: c^n → c if n is odd, c² if n is even (and n > 0).
+fn simplify_product(product: Vec<ConstOrVar>, coef_vars: &VarSet) -> Vec<ConstOrVar> {
+    let mut result = Vec::new();
+    let mut coef_counts: HashMap<VarIdx, usize> = HashMap::new();
+
+    // Separate constants, coefficient variables, and other variables
+    for item in product {
+        match item {
+            ConstOrVar::Const(_) => result.push(item),
+            ConstOrVar::Var(idx) => {
+                if coef_vars.contains(&idx) {
+                    *coef_counts.entry(idx).or_insert(0) += 1;
+                } else {
+                    result.push(item);
+                }
+            }
+        }
+    }
+
+    // Apply cubic simplification: c^n → c if n is odd, c² if n is even
+    for (idx, count) in coef_counts {
+        let effective_count = if count % 2 == 0 { 2 } else { 1 };
+        for _ in 0..effective_count {
+            result.push(ConstOrVar::Var(idx));
+        }
+    }
+
+    result
+}
+
+/// Linearizes coefficient products in a sum-of-products by introducing auxiliary variables.
+///
+/// For each product term:
+/// - Scans for coefficient variable products (c*c or c*d)
+/// - Replaces c² with auxiliary variable c2
+/// - Replaces c*d with auxiliary variable c_d
+/// - Handles n-ary products via recursive pairing
+fn linearize_products(
+    sop: SumOfProducts,
+    coef_vars: &VarSet,
+    ctx: &mut LinearizationContext,
+) -> SumOfProducts {
+    sop.into_iter()
+        .map(|product| linearize_single_product(product, coef_vars, ctx))
+        .collect()
+}
+
+/// Linearizes a single product term.
+fn linearize_single_product(
+    product: Vec<ConstOrVar>,
+    coef_vars: &VarSet,
+    ctx: &mut LinearizationContext,
+) -> Vec<ConstOrVar> {
+    let mut result = Vec::new();
+    let mut coef_terms = Vec::new();
+
+    // Separate coefficient variables from other terms
+    for item in product {
+        match item {
+            ConstOrVar::Var(idx) if coef_vars.contains(&idx) => {
+                coef_terms.push(idx);
+            }
+            _ => result.push(item),
+        }
+    }
+
+    // Handle coefficient variables
+    if !coef_terms.is_empty() {
+        // Count occurrences for squared term detection
+        let mut counts: HashMap<VarIdx, usize> = HashMap::new();
+        for idx in &coef_terms {
+            *counts.entry(*idx).or_insert(0) += 1;
+        }
+
+        // Collect linearized coefficient terms
+        let mut linearized_coef_terms = Vec::new();
+
+        // Handle squared terms (c² → c2)
+        for (&idx, &count) in &counts {
+            if count >= 2 {
+                let c2 = ctx.get_or_create_squared(idx);
+                linearized_coef_terms.push(c2);
+            }
+        }
+
+        // Handle single occurrences
+        for (&idx, &count) in &counts {
+            if count == 1 {
+                linearized_coef_terms.push(idx);
+            }
+        }
+
+        // Recursively pair until at most one remains
+        while linearized_coef_terms.len() >= 2 {
+            let mut new_terms = Vec::new();
+            let mut i = 0;
+            while i + 1 < linearized_coef_terms.len() {
+                let a_idx = linearized_coef_terms[i];
+                let b_idx = linearized_coef_terms[i + 1];
+                let ab = ctx.get_or_create_product(a_idx, b_idx);
+                new_terms.push(ab);
+                i += 2;
+            }
+            if i < linearized_coef_terms.len() {
+                new_terms.push(linearized_coef_terms[i]);
+            }
+            linearized_coef_terms = new_terms;
+        }
+
+        // Add linearized coefficient terms to result
+        for idx in linearized_coef_terms {
+            result.push(ConstOrVar::Var(idx));
+        }
+    }
+
+    result
+}
+
+/// Converts sum-of-products back to a term::Term.
+fn from_sum_of_products(sop: SumOfProducts) -> term::Term {
+    if sop.is_empty() {
+        return term::int(0);
+    }
+
+    let sum_terms: Vec<term::Term> = sop
+        .into_iter()
+        .map(|product| from_product(product))
+        .collect();
+
+    term::add(sum_terms)
+}
+
+/// Converts a single product to a term::Term.
+fn from_product(product: Vec<ConstOrVar>) -> term::Term {
+    if product.is_empty() {
+        return term::int(1);
+    }
+
+    let factors: Vec<term::Term> = product
+        .into_iter()
+        .map(|item| match item {
+            ConstOrVar::Const(n) => term::int(n),
+            ConstOrVar::Var(idx) => term::var(idx, typ::int()),
+        })
+        .collect();
+
+    term::mul(factors)
+}
+
+/// Context for linearization: manages auxiliary variables and their constraints.
+struct LinearizationContext {
+    /// Maps coefficient var to its square variable (c → c2 where c2 represents c²)
+    squared_vars: HashMap<VarIdx, VarIdx>,
+    /// Maps (c, d) pair to product variable c_d (where c_d represents c*d)
+    product_vars: HashMap<(VarIdx, VarIdx), VarIdx>,
+    /// Next fresh variable index
+    next_var: VarIdx,
+    /// Constraint terms for the auxiliary variables
+    constraints: Vec<term::Term>,
+}
+
+impl LinearizationContext {
+    fn new(start_var: VarIdx) -> Self {
+        LinearizationContext {
+            squared_vars: HashMap::new(),
+            product_vars: HashMap::new(),
+            next_var: start_var,
+            constraints: Vec::new(),
+        }
+    }
+
+    /// Get or create a squared variable for c.
+    /// Adds constraint: (c = 0 ∧ c2 = 0) ∨ c2 = 1
+    fn get_or_create_squared(&mut self, c: VarIdx) -> VarIdx {
+        if let Some(&c2) = self.squared_vars.get(&c) {
+            return c2;
+        }
+
+        let c2 = self.next_var;
+        self.next_var = VarIdx::new(self.next_var.get() + 1);
+        self.squared_vars.insert(c, c2);
+
+        // Add constraint: (c = 0 ∧ c2 = 0) ∨ c2 = 1
+        let c_term = term::var(c, typ::int());
+        let c2_term = term::var(c2, typ::int());
+
+        let case1 = term::and(vec![
+            term::eq(c_term.clone(), term::int(0)),
+            term::eq(c2_term.clone(), term::int(0)),
+        ]);
+        let case2 = term::eq(c2_term.clone(), term::int(1));
+
+        self.constraints.push(term::or(vec![case1, case2]));
+
+        c2
+    }
+
+    /// Get or create a product variable for c*d.
+    /// Adds constraint: (c = 0 ∧ c_d = 0) ∨ (c = 1 ∧ c_d = d) ∨ (c = -1 ∧ c_d = -d)
+    fn get_or_create_product(&mut self, c: VarIdx, d: VarIdx) -> VarIdx {
+        // Normalize to (min, max) ordering
+        let key = if c < d { (c, d) } else { (d, c) };
+
+        if let Some(&c_d) = self.product_vars.get(&key) {
+            return c_d;
+        }
+
+        let c_d = self.next_var;
+        self.next_var = VarIdx::new(self.next_var.get() + 1);
+        self.product_vars.insert(key, c_d);
+
+        // Use the first variable (smaller index) as the "control" variable
+        let (ctrl, other) = (key.0, key.1);
+        let ctrl_term = term::var(ctrl, typ::int());
+        let other_term = term::var(other, typ::int());
+        let c_d_term = term::var(c_d, typ::int());
+
+        // (ctrl = 0 ∧ c_d = 0) ∨ (ctrl = 1 ∧ c_d = other) ∨ (ctrl = -1 ∧ c_d = -other)
+        let case1 = term::and(vec![
+            term::eq(ctrl_term.clone(), term::int(0)),
+            term::eq(c_d_term.clone(), term::int(0)),
+        ]);
+        let case2 = term::and(vec![
+            term::eq(ctrl_term.clone(), term::int(1)),
+            term::eq(c_d_term.clone(), other_term.clone()),
+        ]);
+        let case3 = term::and(vec![
+            term::eq(ctrl_term.clone(), term::int(-1)),
+            term::eq(c_d_term.clone(), term::cmul(-1, other_term.clone())),
+        ]);
+
+        self.constraints.push(term::or(vec![case1, case2, case3]));
+
+        c_d
+    }
+
+    /// Get all constraints as a conjunction.
+    fn get_constraints(&self) -> term::Term {
+        if self.constraints.is_empty() {
+            term::bool(true)
+        } else {
+            term::and(self.constraints.clone())
+        }
+    }
+}
+
+/// Linearizes a formula by transforming arithmetic terms at comparison boundaries.
+///
+/// This boundary-based approach transforms arithmetic terms only when encountered
+/// within comparison operators (>=, ==, etc.), avoiding fragile dependencies on
+/// term constructor simplification behavior.
+fn linearize_term(term: &term::Term, ctx: &mut LinearizationContext, coef_vars: &VarSet) -> term::Term {
+    match term.get() {
+        term::RTerm::Var(_, _) | term::RTerm::Cst(_) => term.clone(),
+
+        term::RTerm::App { op, args, .. } => {
+            match op {
+                // BOUNDARY: Comparison operators contain arithmetic terms
+                term::Op::Ge | term::Op::Gt | term::Op::Le | term::Op::Lt if args.len() == 2 => {
+                    // Transform both sides at this boundary
+                    let left_poly = arithmetic_to_normal_form(&args[0], coef_vars);
+                    let right_poly = arithmetic_to_normal_form(&args[1], coef_vars);
+
+                    let left_lin = linearize_products(left_poly, coef_vars, ctx);
+                    let right_lin = linearize_products(right_poly, coef_vars, ctx);
+
+                    let left_term = from_sum_of_products(left_lin);
+                    let right_term = from_sum_of_products(right_lin);
+
+                    term::app(*op, vec![left_term, right_term])
+                }
+
+                term::Op::Eql if args.len() == 2 && args[0].typ().is_int() => {
+                    // Transform arithmetic equality
+                    let left_poly = arithmetic_to_normal_form(&args[0], coef_vars);
+                    let right_poly = arithmetic_to_normal_form(&args[1], coef_vars);
+
+                    let left_lin = linearize_products(left_poly, coef_vars, ctx);
+                    let right_lin = linearize_products(right_poly, coef_vars, ctx);
+
+                    let left_term = from_sum_of_products(left_lin);
+                    let right_term = from_sum_of_products(right_lin);
+
+                    term::eq(left_term, right_term)
+                }
+
+                // Boolean operators: recurse on arguments
+                term::Op::And | term::Op::Or | term::Op::Not | term::Op::Impl => {
+                    let new_args: Vec<term::Term> = args
+                        .iter()
+                        .map(|a| linearize_term(a, ctx, coef_vars))
+                        .collect();
+                    term::app(*op, new_args)
+                }
+
+                // Ite: recurse on all branches
+                term::Op::Ite if args.len() == 3 => {
+                    let cond = linearize_term(&args[0], ctx, coef_vars);
+                    let then_branch = linearize_term(&args[1], ctx, coef_vars);
+                    let else_branch = linearize_term(&args[2], ctx, coef_vars);
+                    term::ite(cond, then_branch, else_branch)
+                }
+
+                // Other operators: recurse on arguments
+                _ => {
+                    let new_args: Vec<term::Term> = args
+                        .iter()
+                        .map(|a| linearize_term(a, ctx, coef_vars))
+                        .collect();
+                    term::app(*op, new_args)
+                }
+            }
+        }
+
+        // Datatype and function terms: recurse on subterms
+        term::RTerm::DTypNew { name, args, typ, .. } => {
+            let new_args: Vec<term::Term> = args
+                .iter()
+                .map(|a| linearize_term(a, ctx, coef_vars))
+                .collect();
+            term::dtyp_new(typ.clone(), name.clone(), new_args)
+        }
+
+        term::RTerm::DTypSlc { name, term: inner, typ, .. } => {
+            term::dtyp_slc(typ.clone(), name.clone(), linearize_term(inner, ctx, coef_vars))
+        }
+
+        term::RTerm::DTypTst { name, term: inner, .. } => {
+            term::dtyp_tst(name.clone(), linearize_term(inner, ctx, coef_vars))
+        }
+
+        term::RTerm::CArray { term: inner, typ, .. } => {
+            let new_inner = linearize_term(inner, ctx, coef_vars);
+            if new_inner == *inner {
+                term.clone()
+            } else {
+                term::cst_array(typ.clone(), new_inner)
+            }
+        }
+
+        term::RTerm::Fun { name, args, .. } => {
+            let new_args: Vec<term::Term> = args
+                .iter()
+                .map(|a| linearize_term(a, ctx, coef_vars))
+                .collect();
+            term::fun(name.clone(), new_args)
+        }
+    }
+}
+
+/// Solves a template formula using linearization for [-1, 1] coefficients.
+fn solve_by_linearization(
+    form: &term::Term,
+    template_info: &TemplateInfo,
+    fvs: &VarSet,
+    solver: &mut Solver<Parser>,
+) -> Res<Option<Model>> {
+    log_debug!("Using linearization solver for {} variables", fvs.len());
+
+    // Step 1: Find max variable index for fresh auxiliary variables
+    let max_var = fvs.iter().copied().max().unwrap_or(VarIdx::new(0));
+    let start_var = VarIdx::new(max_var.get() + 1);
+
+    // Step 2: Create linearization context and linearize the formula
+    // The boundary-based approach transforms arithmetic at comparison operators
+    let mut ctx = LinearizationContext::new(start_var);
+    let linearized = linearize_term(form, &mut ctx, fvs);
+    log_debug!("Linearized form: {}", linearized);
+
+    // Step 3: Setup solver
+    solver.reset()?;
+    solver.set_option(":timeout", "10000")?; // 10 second timeout
+
+    // Declare original coefficient variables with bounds [-1, 1]
+    for var_idx in fvs.iter() {
+        solver.declare_const(&format!("v_{}", var_idx), "Int")?;
+        writeln!(solver, "(assert (>= v_{} (- 1)))", var_idx)?;
+        writeln!(solver, "(assert (<= v_{} 1))", var_idx)?;
+    }
+
+    // Declare squared variables with bounds [0, 1]
+    for (&_c, &c2) in &ctx.squared_vars {
+        solver.declare_const(&format!("v_{}", c2), "Int")?;
+        writeln!(solver, "(assert (>= v_{} 0))", c2)?;
+        writeln!(solver, "(assert (<= v_{} 1))", c2)?;
+    }
+
+    // Declare product variables (can be in range [-1, 1] since result of c*d)
+    for (&(_c, _d), &c_d) in &ctx.product_vars {
+        solver.declare_const(&format!("v_{}", c_d), "Int")?;
+        writeln!(solver, "(assert (>= v_{} (- 1)))", c_d)?;
+        writeln!(solver, "(assert (<= v_{} 1))", c_d)?;
+    }
+
+    // Assert auxiliary variable constraints
+    let aux_constraints = ctx.get_constraints();
+    if !ctx.constraints.is_empty() {
+        writeln!(solver, "; Auxiliary variable constraints")?;
+        writeln!(solver, "(assert {})", aux_constraints)?;
+    }
+
+    // Assert the linearized formula
+    writeln!(solver, "; Linearized target formula")?;
+    writeln!(solver, "(assert {})", linearized)?;
+
+    // Solve
+    let sat = solver.check_sat()?;
+    if !sat {
+        log_debug!("Linearization solver: UNSAT");
+        return Ok(None);
+    }
+
+    // Extract model, filtering to only original variables
+    let full_model = solver.get_model()?;
+    let full_model = Parser.fix_model(full_model)?;
+
+    // Build a model with only the original coefficient variables
+    let model = Model::of_model(&template_info.parameters, full_model, true)?;
+    log_debug!("Linearization solver: SAT with model {}", model);
+
+    Ok(Some(model))
+}
+
 impl<'a> LearnCtx<'a> {
     pub fn new(
         encs: &'a mut BTreeMap<Typ, Encoder>,
@@ -809,8 +1359,15 @@ impl<'a> LearnCtx<'a> {
     ) -> Res<Option<Model>> {
         let fvs = form.free_vars();
         if let Some((min, max)) = template_info.param_range() {
+            // Use blasting for small problems
             if fvs.len() <= THRESHOLD_BLASTING && max - min + 1 <= THRESHOLD_BLASTING_MAX_RANGE {
                 return solve_by_blasting(form, template_info, &fvs, min, max)
+            }
+
+            // Use linearization for [-1, 1] templates with many variables
+            // Triggers when: (a) forced via config, OR (b) vars > threshold and range is [-1,1]
+            if min == -1 && max == 1 && (conf.force_linearization || fvs.len() > THRESHOLD_BLASTING) {
+                return solve_by_linearization(form, template_info, &fvs, &mut self.solver);
             }
         }
         self.solver.reset()?;
@@ -958,4 +1515,111 @@ pub fn work<'a>(
     let mut learn_ctx = LearnCtx::new(encs, cex, solver, profiler);
     learn_ctx.work()?;
     Ok(())
+}
+
+// ============================================================================
+// Unit tests for linearization
+// ============================================================================
+
+//   HOICE_FORCE_LINEARIZATION=1 cargo test --test <integration_test>
+// or by running:
+//   ./target/debug/hoice --force-linearization=on <test_file.smt2>
+// ============================================================================
+
+// ============================================================================
+// Tests for the new linearization architecture
+// ============================================================================
+
+#[test]
+fn test_arithmetic_to_normal_form_basic() {
+    // Test: c * d => [[c, d]]
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    let term = term::mul(vec![c, d]);
+    
+    let sop = arithmetic_to_normal_form(&term, &coef_vars);
+    
+    assert_eq!(sop.len(), 1); // One product
+    assert_eq!(sop[0].len(), 2); // Two factors
+}
+
+#[test]
+fn test_arithmetic_to_normal_form_sum() {
+    // Test: c * (d + e) => [[c, d], [c, e]]
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    let e_idx = VarIdx::new(2);
+    
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    coef_vars.insert(e_idx);
+    
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    let e = term::var(e_idx, typ::int());
+    
+    let term = term::mul(vec![c, term::add(vec![d, e])]);
+    
+    let sop = arithmetic_to_normal_form(&term, &coef_vars);
+    
+    assert_eq!(sop.len(), 2); // Two products: c*d and c*e
+}
+
+#[test]
+fn test_linearization_context_creates_aux_vars() {
+    let start_var = VarIdx::new(10);
+    let mut ctx = LinearizationContext::new(start_var);
+    
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    
+    // Create squared variable
+    let c2 = ctx.get_or_create_squared(c_idx);
+    assert_eq!(c2, VarIdx::new(10));
+    
+    // Create product variable
+    let c_d = ctx.get_or_create_product(c_idx, d_idx);
+    assert_eq!(c_d, VarIdx::new(11));
+    
+    // Verify reuse
+    let c2_again = ctx.get_or_create_squared(c_idx);
+    assert_eq!(c2_again, c2);
+}
+
+#[test]
+fn test_full_linearization_on_comparison() {
+    // Test: c * d >= 0
+    let c_idx = VarIdx::new(0);
+    let d_idx = VarIdx::new(1);
+    
+    let mut coef_vars = VarSet::new();
+    coef_vars.insert(c_idx);
+    coef_vars.insert(d_idx);
+    
+    let c = term::var(c_idx, typ::int());
+    let d = term::var(d_idx, typ::int());
+    
+    // c * d >= 0
+    let term = term::ge(term::mul(vec![c, d]), term::int(0));
+    
+    let start_var = VarIdx::new(10);
+    let mut ctx = LinearizationContext::new(start_var);
+    let linearized = linearize_term(&term, &mut ctx, &coef_vars);
+    
+    // Should create product variable c_d
+    assert_eq!(ctx.product_vars.len(), 1);
+    assert!(ctx.squared_vars.is_empty());
+    
+    // Linearized form should be: c_d >= 0
+    let (op, args) = linearized.app_inspect().expect("expected comparison");
+    assert_eq!(op, term::Op::Ge);
+    assert_eq!(args.len(), 2);
 }
