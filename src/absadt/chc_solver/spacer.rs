@@ -85,8 +85,9 @@ impl Spacer {
 impl Spacer {
     fn new() -> Res<Spacer> {
         let mut args = OPTION.to_vec();
+        let path = conf.spacer.clone().unwrap_or("z3".to_string());
         args.push("-in");
-        let mut child = Command::new("z3")
+        let mut child = Command::new(path)
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

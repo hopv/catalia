@@ -1169,6 +1169,8 @@ pub struct Config {
     pub preproc: PreprocConf,
     /// Solver configuration.
     pub solver: SmtConf,
+    /// Spacer binary path
+    pub spacer: Option<String>,
     /// Ice configuration.
     pub ice: IceConf,
     /// Teacher configuration.
@@ -1321,6 +1323,9 @@ impl Config {
 
         let instance = InstanceConf::new(&matches);
         let preproc = PreprocConf::new(&matches);
+        let spacer = matches
+            .value_of("spacer")
+            .map(|s| s.to_string());
         let solver = SmtConf::new(&matches);
         let ice = IceConf::new(&matches);
         let teacher = TeacherConf::new(&matches);
@@ -1344,6 +1349,7 @@ impl Config {
             use_eldarica_cex,
             instance,
             preproc,
+            spacer,
             solver,
             ice,
             teacher,
@@ -1519,6 +1525,16 @@ impl Config {
                     .validator(bool_validator)
                     .value_name(bool_format)
                     .default_value("off")
+                    .takes_value(true)
+                    .number_of_values(1)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("spacer")
+                    .long("--spacer")
+                    .help("Path to Spacer CHC engine binary")
+                    .value_name("spacer path")
+                    .value_parser(clap::value_parser!(String))
                     .takes_value(true)
                     .number_of_values(1)
                     .display_order(order()),
