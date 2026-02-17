@@ -1169,7 +1169,7 @@ pub struct Config {
     pub preproc: PreprocConf,
     /// Solver configuration.
     pub solver: SmtConf,
-    /// Space binary path
+    /// Spacer binary path
     pub spacer: Option<String>,
     /// Ice configuration.
     pub ice: IceConf,
