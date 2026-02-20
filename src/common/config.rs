@@ -1162,6 +1162,11 @@ pub struct Config {
     pub no_eldarica: bool,
     /// Use Eldarica instead of Spacer for counterexample generation.
     pub use_eldarica_cex: bool,
+    /// Do not encode idx! argument in predicates for CEX position tracking.
+    /// When true, tag! predicates are still used for clause identification,
+    /// but predicates do not get an extra Int first argument. Instead,
+    /// predicate applications are matched positionally during CEX reconstruction.
+    pub no_idx_arg: bool,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1316,6 +1321,9 @@ impl Config {
         let use_eldarica_cex = std::env::var("HOICE_USE_ELDARICA_CEX")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
             .unwrap_or_else(|_| bool_of_matches(&matches, "use_eldarica_cex"));
+        let no_idx_arg = std::env::var("HOICE_NO_IDX_ARG")
+            .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
+            .unwrap_or_else(|_| matches.is_present("no_idx_arg"));
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
@@ -1347,6 +1355,7 @@ impl Config {
             no_hoice,
             no_eldarica,
             use_eldarica_cex,
+            no_idx_arg,
             instance,
             preproc,
             spacer,
@@ -1527,6 +1536,13 @@ impl Config {
                     .default_value("off")
                     .takes_value(true)
                     .number_of_values(1)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("no_idx_arg")
+                    .long("--no-idx-arg")
+                    .help("do not encode idx! argument in predicates; match predicate positions syntactically instead")
+                    .takes_value(false)
                     .display_order(order()),
             )
             .arg(
