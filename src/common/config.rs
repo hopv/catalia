@@ -1162,10 +1162,7 @@ pub struct Config {
     pub no_eldarica: bool,
     /// Use Eldarica instead of Spacer for counterexample generation.
     pub use_eldarica_cex: bool,
-    /// Do not encode idx! argument in predicates for CEX position tracking.
-    /// When true, tag! predicates are still used for clause identification,
-    /// but predicates do not get an extra Int first argument. Instead,
-    /// predicate applications are matched positionally during CEX reconstruction.
+    /// Skip idx! argument encoding; match predicate positions syntactically.
     pub no_idx_arg: bool,
 
     /// Instance and factory configuration.
