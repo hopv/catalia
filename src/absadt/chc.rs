@@ -1136,13 +1136,17 @@ impl<'a> AbsInstance<'a> {
             if conf.no_idx_arg {
                 // Positional matching: children appear in the same order as
                 // lhs_preds in the clause body, followed by encoder predicates.
-                // Take the first len(lhs_preds) children as body pred matches.
+                // Skip children whose clsidx is beyond the original instance
+                // (those are admissibility/encoder clauses added during encoding).
                 let mut pos = 0;
                 for child_idx in cur.children.iter() {
                     if pos >= new_lhs_preds.len() {
                         break;
                     }
                     let next_node = tree.nodes.get(child_idx).unwrap();
+                    if next_node.clsidx >= instance.clauses.len() {
+                        continue;
+                    }
                     let app = &new_lhs_preds[pos];
                     let res = walk(instance, tree, next_node, &app.args, vars);
                     terms.push(res);
