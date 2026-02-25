@@ -671,7 +671,7 @@ impl<'a> AbsInstance<'a> {
         // writeln!(w)?;
         // writeln!(w)?;
 
-        let encode_idx = encode_tag && conf.idx_arg;
+        let encode_idx = encode_tag && (!conf.use_eldarica_cex || conf.idx_arg);
         for pred in self.preds.iter() {
             if !pred.is_defined() {
                 write!(w, "({}\n  {}\n  (", keywords::cmd::dec_fun, pred.name)?;
@@ -1133,7 +1133,7 @@ impl<'a> AbsInstance<'a> {
             let mut terms = vec![new_lhs_term];
 
             // traverse lhs_preds and children
-            if conf.idx_arg {
+            if !conf.use_eldarica_cex || conf.idx_arg {
                 for child_idx in cur.children.iter() {
                     let next_node = tree.nodes.get(child_idx).unwrap();
 

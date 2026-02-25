@@ -1162,7 +1162,7 @@ pub struct Config {
     pub no_eldarica: bool,
     /// Use Eldarica instead of Spacer for counterexample generation.
     pub use_eldarica_cex: bool,
-    /// Encode idx! argument in predicates; match predicate positions via explicit idx! argument.
+    /// Force idx! argument encoding in Eldarica CEX mode (Spacer always uses idx! encoding).
     pub idx_arg: bool,
 
     /// Instance and factory configuration.
@@ -1538,7 +1538,7 @@ impl Config {
             .arg(
                 Arg::new("idx_arg")
                     .long("--idx-arg")
-                    .help("encode idx! argument in predicates; match predicate positions via explicit idx! argument instead of positional matching")
+                    .help("force idx! argument encoding even in Eldarica CEX mode (Spacer always uses idx! encoding)")
                     .takes_value(false)
                     .display_order(order()),
             )
