@@ -1,0 +1,28 @@
+FROM rust:1-bookworm
+
+# Install system dependencies: Java 17 (for Eldarica), wget, unzip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jre-headless \
+        wget \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Z3 4.12.6
+RUN wget -q "https://github.com/Z3Prover/z3/releases/download/z3-4.12.6/z3-4.12.6-x64-glibc-2.31.zip" -O /tmp/z3.zip \
+    && unzip /tmp/z3.zip -d /tmp \
+    && mv /tmp/z3-*/bin/z3 /usr/local/bin/z3 \
+    && rm -rf /tmp/z3* \
+    && z3 --version
+
+# Install Eldarica 2.2.1
+RUN wget -q "https://github.com/uuverifiers/eldarica/releases/download/v2.2.1/eldarica-bin-2.2.1.zip" -O /tmp/eld.zip \
+    && unzip /tmp/eld.zip -d /tmp \
+    && mv /tmp/eldarica-* /usr/local/eldarica \
+    && chmod +x /usr/local/eldarica/eld \
+    && rm /tmp/eld.zip \
+    && ln -s /usr/local/eldarica/eld /usr/local/bin/eld
+
+ENV CARGO_TERM_COLOR=always
+ENV HOICE_USE_ELDARICA_CEX=1
+
+WORKDIR /workspace
