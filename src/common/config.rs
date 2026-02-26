@@ -1546,7 +1546,9 @@ impl Config {
                 Arg::new("idx_arg")
                     .long("--idx-arg")
                     .help("force idx! argument encoding even in Eldarica CEX mode (Spacer always uses idx! encoding)")
-                    .takes_value(false)
+                    .takes_value(false),
+            )
+            .arg(
                 Arg::new("use_llm_learn")
                     .long("--llm-learn")
                     .help("use LLM-based encoder learning instead of template synthesis")

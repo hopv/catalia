@@ -447,7 +447,7 @@ pub fn work(
         },
     ];
 
-    let mut last_response: Option<String> = None;
+    let mut _last_response: Option<String> = None;
 
     for attempt in 0..MAX_LLM_ATTEMPTS {
         log_info!("LLM attempt {}/{}", attempt + 1, MAX_LLM_ATTEMPTS);
@@ -489,7 +489,7 @@ Please produce a valid s-expression in the exact format described.",
                         e
                     ),
                 });
-                last_response = Some(response);
+                _last_response = Some(response);
                 continue;
             }
         };
@@ -516,7 +516,7 @@ Please produce a valid s-expression in the exact format described.",
                     role: "user".into(),
                     content: build_cex_feedback(cex, Some(&response)),
                 });
-                last_response = Some(response);
+                _last_response = Some(response);
             }
             Err(e) => {
                 log_info!("SMT check error: {}", e);
@@ -532,7 +532,7 @@ Please try a different encoding.",
                         e
                     ),
                 });
-                last_response = Some(response);
+                _last_response = Some(response);
             }
         }
     }
