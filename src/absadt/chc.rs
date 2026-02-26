@@ -671,12 +671,13 @@ impl<'a> AbsInstance<'a> {
         // writeln!(w)?;
         // writeln!(w)?;
 
+        let encode_idx = encode_tag && (!conf.use_eldarica_cex || conf.idx_arg);
         for pred in self.preds.iter() {
             if !pred.is_defined() {
                 write!(w, "({}\n  {}\n  (", keywords::cmd::dec_fun, pred.name)?;
                 // All predicates take another argument for handling callee
-                // positions
-                if encode_tag {
+                // positions (only when encode_idx is enabled)
+                if encode_idx {
                     write!(w, "Int")?;
                 }
                 for typ in &pred.sig {
@@ -708,11 +709,11 @@ impl<'a> AbsInstance<'a> {
                 w,
                 |w, var_info| write!(w, "{}", var_info.name),
                 |w, fst, p, args, bindings| {
-                    if !args.is_empty() {
+                    if !args.is_empty() || encode_idx {
                         write!(w, "(")?
                     }
                     w.write_all(self.preds[p].name.as_bytes())?;
-                    if encode_tag {
+                    if encode_idx {
                         match fst {
                             either::Left(()) => write!(w, " {IDX_ARG}")?,
                             either::Right(n) => write!(w, " {n}")?,
@@ -722,14 +723,14 @@ impl<'a> AbsInstance<'a> {
                         write!(w, " ")?;
                         arg.write_with(w, |w, var| write!(w, "{}", clause.vars[var]), bindings)?
                     }
-                    if !args.is_empty() {
+                    if !args.is_empty() || encode_idx {
                         write!(w, ")")
                     } else {
                         Ok(())
                     }
                 },
                 if encode_tag { Some(&tag_pred) } else { None },
-                encode_tag,
+                encode_idx,
             )?;
             writeln!(w)?;
             writeln!(w)?
@@ -1132,18 +1133,39 @@ impl<'a> AbsInstance<'a> {
             let mut terms = vec![new_lhs_term];
 
             // traverse lhs_preds and children
-            for child_idx in cur.children.iter() {
-                let next_node = tree.nodes.get(child_idx).unwrap();
+            if !conf.use_eldarica_cex || conf.idx_arg {
+                for child_idx in cur.children.iter() {
+                    let next_node = tree.nodes.get(child_idx).unwrap();
 
-                let original_arg_pos = next_node.args[0].as_i64().unwrap() as usize;
-                // This predicate application is just for the constraint of the reachable
-                // values for each approximation
-                if new_lhs_preds.len() <= original_arg_pos {
-                    continue;
+                    let original_arg_pos = next_node.args[0].as_i64().unwrap() as usize;
+                    // This predicate application is just for the constraint of the reachable
+                    // values for each approximation
+                    if new_lhs_preds.len() <= original_arg_pos {
+                        continue;
+                    }
+                    let app = &new_lhs_preds[original_arg_pos];
+                    let res = walk(instance, tree, next_node, &app.args, vars);
+                    terms.push(res);
                 }
-                let app = &new_lhs_preds[original_arg_pos];
-                let res = walk(instance, tree, next_node, &app.args, vars);
-                terms.push(res);
+            } else {
+                // Positional matching: children appear in the same order as
+                // lhs_preds in the clause body, followed by encoder predicates.
+                // Skip children whose clsidx is beyond the original instance
+                // (those are admissibility/encoder clauses added during encoding).
+                let mut pos = 0;
+                for child_idx in cur.children.iter() {
+                    if pos >= new_lhs_preds.len() {
+                        break;
+                    }
+                    let next_node = tree.nodes.get(child_idx).unwrap();
+                    if next_node.clsidx >= instance.clauses.len() {
+                        continue;
+                    }
+                    let app = &new_lhs_preds[pos];
+                    let res = walk(instance, tree, next_node, &app.args, vars);
+                    terms.push(res);
+                    pos += 1;
+                }
             }
             assert_eq!(new_lhs_preds.len() + 1, terms.len());
             let res = term::and(terms);
