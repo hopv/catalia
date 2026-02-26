@@ -52,6 +52,7 @@ mod eld_cex;
 mod enc;
 mod hyper_res;
 mod learn;
+mod llm_learn;
 mod preproc;
 
 /// Number of expansion depth for synthesizing the initial catamorphism
@@ -207,7 +208,11 @@ impl<'original> AbsConf<'original> {
         let cex = self.get_combined_cex();
 
         log_debug!("combined_cex: {}", cex);
-        learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
+        if conf.use_llm_learn {
+            llm_learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler, &self.instance)?;
+        } else {
+            learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
+        }
         log_info!("encs are updated");
         for (tag, enc) in self.encs.iter() {
             log_debug!("{}: {}", tag, enc);

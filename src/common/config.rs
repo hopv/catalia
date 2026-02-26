@@ -1164,6 +1164,8 @@ pub struct Config {
     pub use_eldarica_cex: bool,
     /// Force idx! argument encoding in Eldarica CEX mode (Spacer always uses idx! encoding).
     pub idx_arg: bool,
+    /// Use LLM-based encoder learning instead of template-based synthesis.
+    pub use_llm_learn: bool,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1321,6 +1323,10 @@ impl Config {
         let idx_arg = std::env::var("HOICE_IDX_ARG")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
             .unwrap_or_else(|_| matches.is_present("idx_arg"));
+        // Check environment variable first, then fall back to CLI arg
+        let use_llm_learn = std::env::var("HOICE_USE_LLM_LEARN")
+            .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
+            .unwrap_or_else(|_| bool_of_matches(&matches, "use_llm_learn"));
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
@@ -1353,6 +1359,7 @@ impl Config {
             no_eldarica,
             use_eldarica_cex,
             idx_arg,
+            use_llm_learn,
             instance,
             preproc,
             spacer,
@@ -1540,6 +1547,14 @@ impl Config {
                     .long("--idx-arg")
                     .help("force idx! argument encoding even in Eldarica CEX mode (Spacer always uses idx! encoding)")
                     .takes_value(false)
+                Arg::new("use_llm_learn")
+                    .long("--llm-learn")
+                    .help("use LLM-based encoder learning instead of template synthesis")
+                    .validator(bool_validator)
+                    .value_name(bool_format)
+                    .default_value("off")
+                    .takes_value(true)
+                    .number_of_values(1)
                     .display_order(order()),
             )
             .arg(
