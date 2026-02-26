@@ -1,6 +1,6 @@
 FROM rust:1-bookworm
 
-# Install system dependencies: Java 11 (for Eldarica), wget, unzip
+# Install system dependencies: Java 17 (for Eldarica), wget, unzip
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jre-headless \
         wget \
