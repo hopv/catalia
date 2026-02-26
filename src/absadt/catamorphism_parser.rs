@@ -15,13 +15,12 @@ macro_rules! bop_bool {
     };
 }
 
-/// Parser for a catamorphism file
-pub fn parse_catamorphism(
-    catamorphism_file: &str,
+/// Parser for a catamorphism from an s-expression string
+pub fn parse_catamorphism_str(
+    input_string: &str,
 ) -> Res<BTreeMap<String, (BTreeMap<String, Approx>, usize)>> {
-    let input_string: String = std::fs::read_to_string(catamorphism_file)?;
     let mut approximations_per_system = BTreeMap::new();
-    if let Ok(tokenized) = lexpr::from_str(&input_string) {
+    if let Ok(tokenized) = lexpr::from_str(input_string) {
         if let Some(datatype) = tokenized.as_cons() {
             for value in datatype.iter() {
                 let value = value.car();
@@ -73,6 +72,14 @@ pub fn parse_catamorphism(
             "Failed to tokenize file".to_string(),
         )))
     }
+}
+
+/// Parser for a catamorphism file
+pub fn parse_catamorphism(
+    catamorphism_file: &str,
+) -> Res<BTreeMap<String, (BTreeMap<String, Approx>, usize)>> {
+    let input_string: String = std::fs::read_to_string(catamorphism_file)?;
+    parse_catamorphism_str(&input_string)
 }
 
 /// Once obtained an s-expression describing the encodings for a constructor
