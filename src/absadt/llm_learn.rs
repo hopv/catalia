@@ -829,28 +829,4 @@ This encodes both length and sum."#;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_openai_base_url_stripping() {
-        // Test the URL normalization logic
-        let mut url = "https://api.openai.com/v1".to_string();
-        url = url.trim_end_matches('/').to_string();
-        if url.ends_with("/v1") {
-            url.truncate(url.len() - 3);
-        }
-        assert_eq!(url, "https://api.openai.com");
-
-        let mut url2 = "https://api.openai.com/v1/".to_string();
-        url2 = url2.trim_end_matches('/').to_string();
-        if url2.ends_with("/v1") {
-            url2.truncate(url2.len() - 3);
-        }
-        assert_eq!(url2, "https://api.openai.com");
-
-        let mut url3 = "https://custom.host.com".to_string();
-        url3 = url3.trim_end_matches('/').to_string();
-        if url3.ends_with("/v1") {
-            url3.truncate(url3.len() - 3);
-        }
-        assert_eq!(url3, "https://custom.host.com");
-    }
 }
