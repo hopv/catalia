@@ -1,11 +1,15 @@
+use std::panic;
+use std::time::Duration;
+
 use super::catamorphism_parser;
 use super::chc::{AbsInstance, CEX};
-use super::enc::{Enc, EncodeCtx, Encoder};
+use super::enc::{EncodeCtx, Encoder};
 use crate::common::{smt::FullParser as Parser, *};
 use crate::dtyp;
 
 const MAX_LLM_ATTEMPTS: usize = 5;
 const ENC_CHECK_TIMEOUT: usize = 4;
+const HTTP_TIMEOUT_SECS: u64 = 120;
 
 // ---------------------------------------------------------------------------
 // LLM provider abstraction
@@ -38,8 +42,13 @@ impl OpenAiProvider {
                 "OPENAI_API_KEY not set".into(),
             )))?;
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".into());
-        let base_url =
+        let mut base_url =
             std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
+        // Strip trailing /v1 to avoid double /v1/v1/... when we append the path
+        base_url = base_url.trim_end_matches('/').to_string();
+        if base_url.ends_with("/v1") {
+            base_url.truncate(base_url.len() - 3);
+        }
         Ok(Self {
             api_key,
             model,
@@ -70,7 +79,13 @@ impl LlmProvider for OpenAiProvider {
             "temperature": 0.7,
         });
 
-        let resp = ureq::post(&url)
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .timeout_write(Duration::from_secs(30))
+            .build();
+
+        let resp = agent.post(&url)
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .set("Content-Type", "application/json")
             .send_string(&body.to_string())
@@ -154,7 +169,13 @@ impl LlmProvider for AnthropicProvider {
             "messages": msgs,
         });
 
-        let resp = ureq::post(url)
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .timeout_write(Duration::from_secs(30))
+            .build();
+
+        let resp = agent.post(url)
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", "2023-06-01")
             .set("Content-Type", "application/json")
@@ -215,17 +236,24 @@ result is available as an integer parameter.
 
 ## Output Format
 
-Produce EXACTLY one s-expression block in the following format:
+Produce EXACTLY one s-expression block. If the problem has multiple datatypes,
+include ALL of them in the same block:
 
 ```
-(("DatatypeName"
-  (ConstructorName1 (param1 param2 ...) expr1 expr2 ...)
-  (ConstructorName2 (param1 param2 ...) expr1 expr2 ...)
+(("DatatypeName1"
+  (Constructor1 (param1 param2 ...) expr1 expr2 ...)
+  (Constructor2 (param1 param2 ...) expr1 expr2 ...)
+  ...
+)
+("DatatypeName2"
+  (Constructor1 (param1 ...) expr1 ...)
   ...
 ))
 ```
 
 Rules:
+- You MUST include an entry for EVERY datatype listed in the "Required Datatypes"
+  section below, with EVERY constructor for each datatype.
 - Each constructor maps to lambda expressions over its selector arguments.
 - For selectors whose type is the same ADT (recursive arguments), the parameter
   represents the INTEGER result of recursively encoding that sub-term, not the
@@ -259,10 +287,42 @@ Here l_0 is the recursive length of the tail, l_1 is the recursive sum, and x is
         .to_string()
 }
 
+/// Build the required datatypes section listing all datatypes and their constructors
+fn build_required_datatypes(encs: &BTreeMap<Typ, Encoder>) -> String {
+    let mut s = "## Required Datatypes\n\nYou MUST provide encoders for ALL of the following datatypes and constructors:\n\n".to_string();
+    for (typ, enc) in encs.iter() {
+        let (dt, prms) = typ.dtyp_inspect().unwrap();
+        s += &format!("- Datatype `{}`:\n", dt.name);
+        for (constr_name, sels) in dt.news.iter() {
+            let sel_descs: Vec<String> = sels
+                .iter()
+                .map(|(sel_name, sel_ty)| {
+                    let ty = sel_ty.to_type(Some(prms)).unwrap();
+                    if encs.contains_key(&ty) {
+                        format!("{} (recursive, encoded as {} int(s))", sel_name, enc.n_params)
+                    } else {
+                        format!("{}: {}", sel_name, ty)
+                    }
+                })
+                .collect();
+            if sel_descs.is_empty() {
+                s += &format!("  - `{}` (no arguments)\n", constr_name);
+            } else {
+                s += &format!("  - `{}` ({})\n", constr_name, sel_descs.join(", "));
+            }
+        }
+    }
+    s
+}
+
 fn build_chc_context(instance: &AbsInstance, encs: &BTreeMap<Typ, Encoder>) -> String {
     let mut chc_buf = Vec::new();
-    // Ignore errors in dump - just produce best-effort context
-    let _ = instance.dump_as_smt2(&mut chc_buf, "", false);
+    match instance.dump_as_smt2(&mut chc_buf, "", false) {
+        Ok(()) => {}
+        Err(e) => {
+            log_info!("Warning: CHC dump failed (LLM will get partial context): {}", e);
+        }
+    }
     let chc_str = String::from_utf8_lossy(&chc_buf);
 
     let mut enc_str = String::new();
@@ -271,9 +331,10 @@ fn build_chc_context(instance: &AbsInstance, encs: &BTreeMap<Typ, Encoder>) -> S
     }
 
     format!(
-        "## CHC Problem (SMT-LIB format)\n\n```smt2\n{}\n```\n\n## Current Encoders\n\n```\n{}\n```\n\n\
+        "{}\n\n## CHC Problem (SMT-LIB format)\n\n```smt2\n{}\n```\n\n## Current Encoders\n\n```\n{}\n```\n\n\
 The current encoders are insufficient. Please propose better encoders that can help \
 distinguish the spurious counterexample from real ones.",
+        build_required_datatypes(encs),
         chc_str, enc_str
     )
 }
@@ -286,10 +347,17 @@ by their encoded integer representations.",
         cex
     );
     if let Some(prev) = prev_attempt {
+        // Only include a short note about the previous attempt, not the full response
+        // (the full response is already in the conversation as an assistant message)
+        let truncated = if prev.len() > 200 {
+            format!("{}...(truncated)", &prev[..200])
+        } else {
+            prev.to_string()
+        };
         s += &format!(
-            "\n\n## Previous Attempt (failed)\n\nYour previous proposal did not refute the CEX:\n```\n{}\n```\n\n\
-Please try a different encoding.",
-            prev
+            "\n\n## Previous Attempt (failed)\n\nYour previous proposal did not refute the CEX. \
+First few chars: `{}`\n\nPlease try a different encoding strategy.",
+            truncated
         );
     }
     s
@@ -356,6 +424,7 @@ fn strip_markdown_fences(text: &str) -> String {
     result
 }
 
+/// Parse an LLM response into encoders, catching panics from the parser
 fn parse_llm_response(
     response: &str,
     encs: &BTreeMap<Typ, Encoder>,
@@ -366,8 +435,123 @@ fn parse_llm_response(
         ))
     })?;
 
-    let parsed = catamorphism_parser::parse_catamorphism_str(&sexp)?;
-    catamorphism_parser::build_encoding_from_approx(parsed, encs)
+    // The catamorphism parser has unwrap!/assert! paths that can panic on
+    // malformed input. Since LLM output is untrusted, catch panics and
+    // convert them to Err so the retry loop can continue.
+    let sexp_clone = sexp.clone();
+    let parse_result = panic::catch_unwind(move || {
+        catamorphism_parser::parse_catamorphism_str(&sexp_clone)
+    });
+
+    let parsed = match parse_result {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => return Err(e),
+        Err(panic_info) => {
+            let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown panic in parser".to_string()
+            };
+            return Err(Error::from_kind(crate::errors::ErrorKind::Msg(
+                format!("Parser panicked on LLM output: {}", msg),
+            )));
+        }
+    };
+
+    let build_result = panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        catamorphism_parser::build_encoding_from_approx(parsed, encs)
+    }));
+
+    match build_result {
+        Ok(Ok(new_encs)) => Ok(new_encs),
+        Ok(Err(e)) => Err(e),
+        Err(panic_info) => {
+            let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown panic in encoder build".to_string()
+            };
+            Err(Error::from_kind(crate::errors::ErrorKind::Msg(
+                format!("Encoder build panicked on LLM output: {}", msg),
+            )))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Structural validation of encoder proposals
+// ---------------------------------------------------------------------------
+
+/// Validate that proposed encoders have the correct structure:
+/// - Every datatype present in the original encoders is covered
+/// - Every constructor of each datatype is present
+/// - All constructors produce the same number of result expressions
+/// - Parameter counts match expected selector counts
+fn validate_encoder_structure(
+    new_encs: &BTreeMap<Typ, Encoder>,
+    original_encs: &BTreeMap<Typ, Encoder>,
+) -> Res<()> {
+    for (typ, _original_enc) in original_encs.iter() {
+        let new_enc = new_encs.get(typ).ok_or_else(|| {
+            Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                "LLM proposal missing encoder for datatype {}",
+                typ
+            )))
+        })?;
+
+        let (dt, prms) = typ.dtyp_inspect().unwrap();
+
+        // Check every constructor is present
+        for (constr_name, sels) in dt.news.iter() {
+            let approx = new_enc.approxs.get(constr_name).ok_or_else(|| {
+                Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                    "LLM proposal for {} missing constructor '{}'",
+                    typ, constr_name
+                )))
+            })?;
+
+            // Check parameter count: one param per selector, but recursive ADT
+            // selectors contribute n_params integers instead of 1
+            let mut expected_params = 0;
+            for (_sel_name, sel_ty) in sels.iter() {
+                let ty = sel_ty.to_type(Some(prms)).unwrap();
+                if let Some(enc) = new_encs.get(&ty) {
+                    expected_params += enc.n_params;
+                } else {
+                    expected_params += 1;
+                }
+            }
+            if approx.args.len() != expected_params {
+                return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                    "LLM proposal for {}::{} has {} params, expected {}",
+                    typ, constr_name, approx.args.len(), expected_params
+                ))));
+            }
+
+            // Check result expression count matches n_params
+            if approx.terms.len() != new_enc.n_params {
+                return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                    "LLM proposal for {}::{} produces {} expressions, expected {} (n_params)",
+                    typ, constr_name, approx.terms.len(), new_enc.n_params
+                ))));
+            }
+        }
+
+        // Check no extra constructors
+        for constr_name in new_enc.approxs.keys() {
+            if !dt.news.contains_key(constr_name) {
+                return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                    "LLM proposal for {} has unknown constructor '{}'",
+                    typ, constr_name
+                ))));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +613,16 @@ pub fn work(
     profiler: &Profiler,
     instance: &AbsInstance,
 ) -> Res<()> {
-    let provider = create_provider()?;
+    let provider = match create_provider() {
+        Ok(p) => p,
+        Err(e) => {
+            log_info!(
+                "LLM provider unavailable ({}), falling back to template-based learning",
+                e
+            );
+            return super::learn::work(encs, cex, solver, profiler);
+        }
+    };
     log_info!("Using {} for LLM-based encoder learning", provider.name());
 
     let mut conversation = vec![
@@ -446,8 +639,6 @@ pub fn work(
             ),
         },
     ];
-
-    let mut _last_response: Option<String> = None;
 
     for attempt in 0..MAX_LLM_ATTEMPTS {
         log_info!("LLM attempt {}/{}", attempt + 1, MAX_LLM_ATTEMPTS);
@@ -472,14 +663,14 @@ pub fn work(
 
         log_debug!("LLM response:\n{}", response);
 
-        // Parse response into encoders
+        // Parse response into encoders (catches panics from parser)
         let new_encs = match parse_llm_response(&response, encs) {
             Ok(e) => e,
             Err(e) => {
                 log_info!("Failed to parse LLM response: {}", e);
                 conversation.push(Message {
                     role: "assistant".into(),
-                    content: response.clone(),
+                    content: response,
                 });
                 conversation.push(Message {
                     role: "user".into(),
@@ -489,10 +680,28 @@ Please produce a valid s-expression in the exact format described.",
                         e
                     ),
                 });
-                _last_response = Some(response);
                 continue;
             }
         };
+
+        // Structural validation: check constructor coverage, param counts, etc.
+        if let Err(e) = validate_encoder_structure(&new_encs, encs) {
+            log_info!("LLM encoder failed structural validation: {}", e);
+            conversation.push(Message {
+                role: "assistant".into(),
+                content: response,
+            });
+            conversation.push(Message {
+                role: "user".into(),
+                content: format!(
+                    "Your encoder has structural issues: {}. \
+Please ensure you provide encoders for ALL required datatypes and constructors \
+with the correct number of parameters and result expressions.",
+                    e
+                ),
+            });
+            continue;
+        }
 
         log_info!("new_encs (LLM):");
         for (tag, enc) in new_encs.iter() {
@@ -516,13 +725,12 @@ Please produce a valid s-expression in the exact format described.",
                     role: "user".into(),
                     content: build_cex_feedback(cex, Some(&response)),
                 });
-                _last_response = Some(response);
             }
             Err(e) => {
                 log_info!("SMT check error: {}", e);
                 conversation.push(Message {
                     role: "assistant".into(),
-                    content: response.clone(),
+                    content: response,
                 });
                 conversation.push(Message {
                     role: "user".into(),
@@ -532,7 +740,6 @@ Please try a different encoding.",
                         e
                     ),
                 });
-                _last_response = Some(response);
             }
         }
     }
@@ -609,5 +816,41 @@ This encodes both length and sum."#;
         let input = "```smt2\nhello\n```\n";
         let result = strip_markdown_fences(input);
         assert_eq!(result.trim(), "hello");
+    }
+
+    #[test]
+    fn test_parse_llm_response_catches_panic() {
+        // Malformed input that would cause the parser to panic
+        // (missing constructor body after name)
+        let response = r#"(("BadType" (cons)))"#;
+        let encs = BTreeMap::new();
+        let result = parse_llm_response(response, &encs);
+        // Should be Err, not a panic
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_openai_base_url_stripping() {
+        // Test the URL normalization logic
+        let mut url = "https://api.openai.com/v1".to_string();
+        url = url.trim_end_matches('/').to_string();
+        if url.ends_with("/v1") {
+            url.truncate(url.len() - 3);
+        }
+        assert_eq!(url, "https://api.openai.com");
+
+        let mut url2 = "https://api.openai.com/v1/".to_string();
+        url2 = url2.trim_end_matches('/').to_string();
+        if url2.ends_with("/v1") {
+            url2.truncate(url2.len() - 3);
+        }
+        assert_eq!(url2, "https://api.openai.com");
+
+        let mut url3 = "https://custom.host.com".to_string();
+        url3 = url3.trim_end_matches('/').to_string();
+        if url3.ends_with("/v1") {
+            url3.truncate(url3.len() - 3);
+        }
+        assert_eq!(url3, "https://custom.host.com");
     }
 }
