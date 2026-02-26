@@ -50,9 +50,33 @@ If available, these solvers are used as backend solvers for solving CHC(LIA) pro
    - [Eldarica](https://github.com/uuverifiers/eldarica)
 
 Please ensure that your Z3 binary is available in your PATH.
-Catalia is known **not** to work with some versions of Z3. 
+Catalia is known **not** to work with some versions of Z3.
 We confirm that it works as expected with Z3 version 4.12.0.
 If Catalia does not work as expected, please check the version of Z3 you are using carefully (sorry for this).
+
+
+## Docker (Development)
+
+A `Dockerfile.dev` is provided with all dependencies pre-installed (Rust, Z3 4.12.6, Eldarica 2.2.1, Java 17).
+
+Build the image:
+
+```bash
+docker build -f Dockerfile.dev -t catalia-dev .
+```
+
+Run an interactive shell with the source tree mounted:
+
+```bash
+docker run --rm -it -v "$(pwd)":/workspace catalia-dev bash
+```
+
+Inside the container you can build and test as usual:
+
+```bash
+cargo build --verbose
+cargo test --verbose
+```
 
 
 # Language
