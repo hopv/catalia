@@ -20,7 +20,8 @@ RUN wget -q "https://github.com/uuverifiers/eldarica/releases/download/v2.2.1/el
     && mv /tmp/eldarica-* /usr/local/eldarica \
     && chmod +x /usr/local/eldarica/eld \
     && rm /tmp/eld.zip \
-    && ln -s /usr/local/eldarica/eld /usr/local/bin/eld
+    && ln -s /usr/local/eldarica/eld /usr/local/bin/eld \
+    && eld -version
 
 ENV CARGO_TERM_COLOR=always
 ENV HOICE_USE_ELDARICA_CEX=1
