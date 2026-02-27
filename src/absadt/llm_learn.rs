@@ -97,7 +97,7 @@ impl OpenAiProvider {
             .map_err(|_| Error::from_kind(crate::errors::ErrorKind::Msg(
                 "OPENAI_API_KEY not set".into(),
             )))?;
-        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-5-nano".into());
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-5-mini".into());
         log_info!("Using OpenAI model: {}", model);
         let mut base_url =
             std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
@@ -119,8 +119,8 @@ impl LlmProvider for OpenAiProvider {
         "OpenAI"
     }
     fn request(&self, messages: &[Message]) -> Res<String> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
-        let msgs: Vec<serde_json::Value> = messages
+        let url = format!("{}/v1/responses", self.base_url);
+        let input: Vec<serde_json::Value> = messages
             .iter()
             .map(|m| {
                 serde_json::json!({
@@ -132,7 +132,7 @@ impl LlmProvider for OpenAiProvider {
 
         let body = serde_json::json!({
             "model": self.model,
-            "messages": msgs,
+            "input": input,
             "temperature": 0.7,
         });
 
@@ -160,7 +160,7 @@ impl LlmProvider for OpenAiProvider {
             )))
         })?;
 
-        resp_body["choices"][0]["message"]["content"]
+        resp_body["output"][0]["content"][0]["text"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| {
