@@ -1,4 +1,6 @@
+use std::io::Write as IoWrite;
 use std::panic;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::catamorphism_parser;
@@ -10,6 +12,60 @@ use crate::dtyp;
 const MAX_LLM_ATTEMPTS: usize = 5;
 const ENC_CHECK_TIMEOUT: usize = 4;
 const HTTP_TIMEOUT_SECS: u64 = 120;
+
+// ---------------------------------------------------------------------------
+// Query logging
+// ---------------------------------------------------------------------------
+
+struct QueryLogger {
+    dir: PathBuf,
+}
+
+impl QueryLogger {
+    fn new() -> Self {
+        let dir = std::env::temp_dir().join(format!("catalia-llm-{}", std::process::id()));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            log_info!("Warning: failed to create LLM log dir {:?}: {}", dir, e);
+        } else {
+            log_info!("LLM query logs: {}", dir.display());
+        }
+        Self { dir }
+    }
+
+    fn log_query(&self, attempt: usize, messages: &[Message], response: &str) {
+        // Write input (conversation sent to LLM)
+        let input_path = self.dir.join(format!("attempt-{}-input.txt", attempt));
+        if let Ok(mut f) = std::fs::File::create(&input_path) {
+            for msg in messages {
+                let _ = writeln!(f, "=== {} ===", msg.role);
+                let _ = writeln!(f, "{}", msg.content);
+                let _ = writeln!(f);
+            }
+        }
+
+        // Write output (LLM response)
+        let output_path = self.dir.join(format!("attempt-{}-output.txt", attempt));
+        if let Ok(mut f) = std::fs::File::create(&output_path) {
+            let _ = write!(f, "{}", response);
+        }
+    }
+
+    fn log_error(&self, attempt: usize, messages: &[Message], error: &str) {
+        let input_path = self.dir.join(format!("attempt-{}-input.txt", attempt));
+        if let Ok(mut f) = std::fs::File::create(&input_path) {
+            for msg in messages {
+                let _ = writeln!(f, "=== {} ===", msg.role);
+                let _ = writeln!(f, "{}", msg.content);
+                let _ = writeln!(f);
+            }
+        }
+
+        let error_path = self.dir.join(format!("attempt-{}-error.txt", attempt));
+        if let Ok(mut f) = std::fs::File::create(&error_path) {
+            let _ = write!(f, "{}", error);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // LLM provider abstraction
@@ -624,6 +680,7 @@ pub fn work(
         }
     };
     log_info!("Using {} for LLM-based encoder learning", provider.name());
+    let logger = QueryLogger::new();
 
     let mut conversation = vec![
         Message {
@@ -648,6 +705,7 @@ pub fn work(
             Ok(r) => r,
             Err(e) => {
                 log_info!("LLM request failed: {}", e);
+                logger.log_error(attempt + 1, &conversation, &e.to_string());
                 // Feed error back and retry
                 conversation.push(Message {
                     role: "assistant".into(),
@@ -662,6 +720,7 @@ pub fn work(
         };
 
         log_debug!("LLM response:\n{}", response);
+        logger.log_query(attempt + 1, &conversation, &response);
 
         // Parse response into encoders (catches panics from parser)
         let new_encs = match parse_llm_response(&response, encs) {
