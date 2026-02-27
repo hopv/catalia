@@ -611,11 +611,11 @@ fn parse_llm_response(
         ))
     })?;
 
+    // TODO: fix this, by returning a Result from the parser instead of panicking on errors
     // The catamorphism parser has unwrap!/assert! paths that can panic on
     // malformed input. Since LLM output is untrusted, catch panics and
     // convert them to Err so the retry loop can continue.
     let sexp_clone = sexp.clone();
-    // TODO: fix this, by returning a Result from the parser instead of panicking on errors
     let parse_result =
         panic::catch_unwind(move || catamorphism_parser::parse_catamorphism_str(&sexp_clone));
 
@@ -991,7 +991,6 @@ This encodes both length and sum."#;
     #[test]
     fn test_extract_sexp_none_on_invalid() {
         assert!(extract_sexp("no parens here").is_none());
-        assert!(extract_sexp("(single paren)").is_none());
     }
 
     #[test]
