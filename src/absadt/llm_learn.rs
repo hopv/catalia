@@ -93,10 +93,11 @@ struct OpenAiProvider {
 
 impl OpenAiProvider {
     fn new() -> Res<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| Error::from_kind(crate::errors::ErrorKind::Msg(
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            Error::from_kind(crate::errors::ErrorKind::Msg(
                 "OPENAI_API_KEY not set".into(),
-            )))?;
+            ))
+        })?;
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-5-mini".into());
         log_info!("Using OpenAI model: {}", model);
         let mut base_url =
@@ -114,10 +115,29 @@ impl OpenAiProvider {
     }
 }
 
+fn extract_openai_output_text(resp_body: &serde_json::Value) -> Option<String> {
+    let output = resp_body.get("output")?.as_array()?;
+    for item in output {
+        if item.get("type")?.as_str()? != "message" {
+            continue;
+        }
+        let content = item.get("content")?.as_array()?;
+        for part in content {
+            if part.get("type")?.as_str()? == "output_text" {
+                if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                    return Some(t.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "OpenAI"
     }
+
     fn request(&self, messages: &[Message]) -> Res<String> {
         let url = format!("{}/v1/responses", self.base_url);
 
@@ -144,11 +164,12 @@ impl LlmProvider for OpenAiProvider {
         let mut body = serde_json::json!({
             "model": self.model,
             "input": input,
-            "temperature": 0.7,
         });
         if !instructions.is_empty() {
             body["instructions"] = serde_json::Value::String(instructions);
         }
+        body["max_output_tokens"] = serde_json::Value::Number(1600.into());
+        body["reasoning"] = serde_json::json!({"effort":"low"}); // for development
 
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(30))
@@ -156,16 +177,29 @@ impl LlmProvider for OpenAiProvider {
             .timeout_write(Duration::from_secs(30))
             .build();
 
-        let resp = agent.post(&url)
+        let resp = match agent
+            .post(&url)
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .set("Content-Type", "application/json")
             .send_string(&body.to_string())
-            .map_err(|e| {
-                Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+        {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) => {
+                let text = r
+                    .into_string()
+                    .unwrap_or_else(|_| "<failed to read body>".into());
+                return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                    "OpenAI API request failed: HTTP {}: {}",
+                    code, text
+                ))));
+            }
+            Err(e) => {
+                return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
                     "OpenAI API request failed: {}",
                     e
-                )))
-            })?;
+                ))));
+            }
+        };
 
         let resp_body: serde_json::Value = resp.into_json().map_err(|e| {
             Error::from_kind(crate::errors::ErrorKind::Msg(format!(
@@ -174,15 +208,12 @@ impl LlmProvider for OpenAiProvider {
             )))
         })?;
 
-        resp_body["output"][0]["content"][0]["text"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| {
-                Error::from_kind(crate::errors::ErrorKind::Msg(format!(
-                    "Unexpected OpenAI response format: {}",
-                    resp_body
-                )))
-            })
+        extract_openai_output_text(&resp_body).ok_or_else(|| {
+            Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                "Unexpected OpenAI response format: {}",
+                resp_body
+            )))
+        })
     }
 }
 
@@ -197,12 +228,13 @@ struct AnthropicProvider {
 
 impl AnthropicProvider {
     fn new() -> Res<Self> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| Error::from_kind(crate::errors::ErrorKind::Msg(
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            Error::from_kind(crate::errors::ErrorKind::Msg(
                 "ANTHROPIC_API_KEY not set".into(),
-            )))?;
-        let model = std::env::var("ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+            ))
+        })?;
+        let model =
+            std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
         Ok(Self { api_key, model })
     }
 }
@@ -246,7 +278,8 @@ impl LlmProvider for AnthropicProvider {
             .timeout_write(Duration::from_secs(30))
             .build();
 
-        let resp = agent.post(url)
+        let resp = agent
+            .post(url)
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", "2023-06-01")
             .set("Content-Type", "application/json")
@@ -287,16 +320,13 @@ fn create_provider() -> Res<Box<dyn LlmProvider>> {
     } else if std::env::var("OPENAI_API_KEY").is_ok() {
         Ok(Box::new(OpenAiProvider::new()?))
     } else {
-        bail!(
-            "LLM learning requires ANTHROPIC_API_KEY or OPENAI_API_KEY to be set"
-        )
+        bail!("LLM learning requires ANTHROPIC_API_KEY or OPENAI_API_KEY to be set")
     }
 }
 
 // ---------------------------------------------------------------------------
 // Prompt construction
 // ---------------------------------------------------------------------------
-
 
 fn build_system_prompt() -> String {
     r#"You are an expert in program verification, abstract interpretation, and Horn clause solving.
@@ -430,7 +460,10 @@ fn build_required_datatypes(encs: &BTreeMap<Typ, Encoder>) -> String {
                 .map(|(sel_name, sel_ty)| {
                     let ty = sel_ty.to_type(Some(prms)).unwrap();
                     if encs.contains_key(&ty) {
-                        format!("{} (recursive, encoded as {} int(s))", sel_name, enc.n_params)
+                        format!(
+                            "{} (recursive, encoded as {} int(s))",
+                            sel_name, enc.n_params
+                        )
                     } else {
                         format!("{}: {}", sel_name, ty)
                     }
@@ -451,7 +484,10 @@ fn build_chc_context(instance: &AbsInstance, encs: &BTreeMap<Typ, Encoder>) -> S
     match instance.dump_as_smt2(&mut chc_buf, "", false) {
         Ok(()) => {}
         Err(e) => {
-            log_info!("Warning: CHC dump failed (LLM will get partial context): {}", e);
+            log_info!(
+                "Warning: CHC dump failed (LLM will get partial context): {}",
+                e
+            );
         }
     }
     let chc_str = String::from_utf8_lossy(&chc_buf);
@@ -500,22 +536,11 @@ First few chars: `{}`\n\nPlease try a different encoding strategy.",
 
 /// Extract the outermost s-expression from an LLM response, stripping markdown fences
 fn extract_sexp(response: &str) -> Option<String> {
-    // Strip markdown code fences if present
     let text = strip_markdown_fences(response);
-
-    // Find the outermost balanced parenthesized s-expression starting with ((
     let bytes = text.as_bytes();
-    let mut start = None;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'(' {
-            // Check if this starts with (( which indicates our format
-            if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
-                start = Some(i);
-                break;
-            }
-        }
-    }
-    let start = start?;
+
+    // find first '('
+    let start = bytes.iter().position(|&b| b == b'(')?;
 
     let mut depth = 0i32;
     for (i, &b) in bytes[start..].iter().enumerate() {
@@ -570,9 +595,8 @@ fn parse_llm_response(
     // malformed input. Since LLM output is untrusted, catch panics and
     // convert them to Err so the retry loop can continue.
     let sexp_clone = sexp.clone();
-    let parse_result = panic::catch_unwind(move || {
-        catamorphism_parser::parse_catamorphism_str(&sexp_clone)
-    });
+    let parse_result =
+        panic::catch_unwind(move || catamorphism_parser::parse_catamorphism_str(&sexp_clone));
 
     let parsed = match parse_result {
         Ok(Ok(p)) => p,
@@ -585,9 +609,10 @@ fn parse_llm_response(
             } else {
                 "unknown panic in parser".to_string()
             };
-            return Err(Error::from_kind(crate::errors::ErrorKind::Msg(
-                format!("Parser panicked on LLM output: {}", msg),
-            )));
+            return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                "Parser panicked on LLM output: {}",
+                msg
+            ))));
         }
     };
 
@@ -606,9 +631,10 @@ fn parse_llm_response(
             } else {
                 "unknown panic in encoder build".to_string()
             };
-            Err(Error::from_kind(crate::errors::ErrorKind::Msg(
-                format!("Encoder build panicked on LLM output: {}", msg),
-            )))
+            Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
+                "Encoder build panicked on LLM output: {}",
+                msg
+            ))))
         }
     }
 }
@@ -659,7 +685,10 @@ fn validate_encoder_structure(
             if approx.args.len() != expected_params {
                 return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
                     "LLM proposal for {}::{} has {} params, expected {}",
-                    typ, constr_name, approx.args.len(), expected_params
+                    typ,
+                    constr_name,
+                    approx.args.len(),
+                    expected_params
                 ))));
             }
 
@@ -667,7 +696,10 @@ fn validate_encoder_structure(
             if approx.terms.len() != new_enc.n_params {
                 return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
                     "LLM proposal for {}::{} produces {} expressions, expected {} (n_params)",
-                    typ, constr_name, approx.terms.len(), new_enc.n_params
+                    typ,
+                    constr_name,
+                    approx.terms.len(),
+                    new_enc.n_params
                 ))));
             }
         }
@@ -720,8 +752,8 @@ fn check_enc_refutes_cex(
 
     // Check satisfiability: UNSAT means the encoder refutes the CEX
     match solver.check_sat() {
-        Ok(false) => Ok(true),  // UNSAT = refuted
-        Ok(true) => Ok(false),  // SAT = not refuted
+        Ok(false) => Ok(true), // UNSAT = refuted
+        Ok(true) => Ok(false), // SAT = not refuted
         Err(e) => {
             let e: Error = e.into();
             if e.is_timeout() {
@@ -747,10 +779,7 @@ pub fn work(
     let provider = match create_provider() {
         Ok(p) => p,
         Err(e) => {
-            panic!(
-                "LLM provider unavailable: {}",
-                e
-            );
+            panic!("LLM provider unavailable: {}", e);
         }
     };
     log_info!("Using {} for LLM-based encoder learning", provider.name());
@@ -961,5 +990,4 @@ This encodes both length and sum."#;
         // Should be Err, not a panic
         assert!(result.is_err());
     }
-
 }

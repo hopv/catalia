@@ -117,12 +117,13 @@ fn run_sat() -> Res<()> {
     for entry in files {
         let entry = map_err!(entry, "while reading entry");
         let file_name = format!("{}", entry.file_name().to_string_lossy());
-        if !file_name.starts_with("no-test-") && map_err!(
-            entry.file_type(),
-            "while reading entry (file type of `{}`)",
-            file_name
-        )
-        .is_file()
+        if !file_name.starts_with("no-test-")
+            && map_err!(
+                entry.file_type(),
+                "while reading entry (file type of `{}`)",
+                file_name
+            )
+            .is_file()
         {
             run_sat_on(&entry.path())?
         }
@@ -167,12 +168,13 @@ fn run_unsat() -> Res<()> {
     for entry in files {
         let entry = map_err!(entry, "while reading entry");
         let file_name = format!("{}", entry.file_name().to_string_lossy());
-        if !file_name.starts_with("no-test-") && map_err!(
-            entry.file_type(),
-            "while reading entry (file type of `{}`)",
-            file_name
-        )
-        .is_file()
+        if !file_name.starts_with("no-test-")
+            && map_err!(
+                entry.file_type(),
+                "while reading entry (file type of `{}`)",
+                file_name
+            )
+            .is_file()
         {
             println!("looking at `{}`", file_name);
             let file = OpenOptions::new()

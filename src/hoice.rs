@@ -68,8 +68,14 @@ pub fn work() -> Res<()> {
             .open(file_path)
             .chain_err(|| format!("while opening input file `{}`", conf.emph(file_path)))?;
 
-		read_and_work(file, conf.in_file_catamorphism().map(|s| s.to_owned()), true, false, false)?;
-		
+        read_and_work(
+            file,
+            conf.in_file_catamorphism().map(|s| s.to_owned()),
+            true,
+            false,
+            false,
+        )?;
+
         Ok(())
     } else {
         // Reading from stdin.
