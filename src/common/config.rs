@@ -1334,9 +1334,7 @@ impl Config {
 
         let instance = InstanceConf::new(&matches);
         let preproc = PreprocConf::new(&matches);
-        let spacer = matches
-            .value_of("spacer")
-            .map(|s| s.to_string());
+        let spacer = matches.value_of("spacer").map(|s| s.to_string());
         let solver = SmtConf::new(&matches);
         let ice = IceConf::new(&matches);
         let teacher = TeacherConf::new(&matches);

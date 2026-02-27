@@ -31,21 +31,22 @@ pub fn parse_catamorphism_str(
                         "I was expecting the datatype name".to_string(),
                     ))),
                 }?;
-				let list_of_approxs_to_parse = value.as_cons().ok_or_else(|| {
-					Error::from_kind(errors::ErrorKind::Msg(format!(
-						"Failed to convert {} to Cons",
-						value
-					)))
-				})?;
-				
-				let single_approx_to_parse = list_of_approxs_to_parse.cdr().as_cons().ok_or_else(|| {
-					Error::from_kind(errors::ErrorKind::Msg(format!(
-						"Failed to convert {} to Cons",
-						value
-					)))
-				})?;
-				
-				let approxs_to_parse = single_approx_to_parse.to_vec().0;
+                let list_of_approxs_to_parse = value.as_cons().ok_or_else(|| {
+                    Error::from_kind(errors::ErrorKind::Msg(format!(
+                        "Failed to convert {} to Cons",
+                        value
+                    )))
+                })?;
+
+                let single_approx_to_parse =
+                    list_of_approxs_to_parse.cdr().as_cons().ok_or_else(|| {
+                        Error::from_kind(errors::ErrorKind::Msg(format!(
+                            "Failed to convert {} to Cons",
+                            value
+                        )))
+                    })?;
+
+                let approxs_to_parse = single_approx_to_parse.to_vec().0;
 
                 for approximation_to_parse in approxs_to_parse.iter() {
                     let (constructor_name, terms, infos) =
@@ -105,7 +106,7 @@ fn from_cons_to_encoding_tuple(input: &lexpr::Value) -> Res<(&str, Vec<Term>, Va
                     let args_list = &function_vec[0];
                     if let Some(args) = args_list.as_cons() {
                         for arg in args.iter() {
-							let var_name = arg.car().as_name();
+                            let var_name = arg.car().as_name();
                             let var_idx = infos.next_index();
                             let info = VarInfo::new(var_name.unwrap(), typ::int(), var_idx);
                             infos.push(info);
@@ -224,61 +225,59 @@ fn parse_list(expr: &lexpr::Value, infos: &VarInfos) -> Res<Term> {
     // first element determines structure
     match expression_exploded.car() {
         lexpr::Value::Number(num) => Ok(term::int(num.as_i64().unwrap())),
-        lexpr::Value::Symbol(s) => {
-            match &**s {
-                "not" => {
-                    let list = remove_operator_connector(expression_exploded.cdr(), "not")?;
-                    let term_to_negate = from_expression_to_term(&list[0], infos)?;
-                    assert_eq!(term_to_negate.typ(), term::typ::bool());
-                    Ok(term::not(term_to_negate))
-                }
-                "ite" => {
-                    let list = remove_operator_connector(expression_exploded.cdr(), "ite")?;
-                    let cond = from_expression_to_term(&list[0], infos)?;
-                    let true_branch = from_expression_to_term(&list[1], infos)?;
-                    let false_branch = from_expression_to_term(&list[2], infos)?;
-                    assert_eq!(true_branch.typ(), false_branch.typ());
-                    Ok(term::ite(cond, true_branch, false_branch))
-                }
-                bop_int!() => {
-                    let list = remove_operator_connector(expression_exploded.cdr(), s)?;
-                    let x = from_expression_to_term(&list[0], infos)?;
-                    let y = from_expression_to_term(&list[1], infos)?;
-                    assert_eq!(x.typ(), term::typ::int());
-                    assert_eq!(y.typ(), term::typ::int());
-                    match &**s {
-                        "=" => Ok(term::eq(x, y)),
-                        ">=" => Ok(term::ge(x, y)),
-                        ">" => Ok(term::gt(x, y)),
-                        "<=" => Ok(term::le(x, y)),
-                        "<" => Ok(term::lt(x, y)),
-                        "+" => Ok(term::add2(x, y)),
-                        "-" => Ok(term::sub2(x, y)),
-                        "*" => Ok(term::mul(vec![x, y])),
-                        _ => Err(Error::from_kind(errors::ErrorKind::Msg(format!(
-                            "Symbol {s} not recognised"
-                        )))),
-                    }
-                }
-                bop_bool!() => {
-                    let list = remove_operator_connector(expression_exploded.cdr(), s)?;
-                    let terms = from_expression_to_boolean_terms(&list, infos)?;
-                    for term in &terms {
-                        assert_eq!(term.typ(), term::typ::bool());
-                    }
-                    match &**s {
-                        "and" => Ok(term::and(terms)),
-                        "or" => Ok(term::or(terms)),
-                        _ => Err(Error::from_kind(errors::ErrorKind::Msg(format!(
-                            "Symbol {s} not recognised"
-                        )))),
-                    }
-                }
-                _ => Err(Error::from_kind(errors::ErrorKind::Msg(
-                    "Unknown symbol".to_string(),
-                ))),
+        lexpr::Value::Symbol(s) => match &**s {
+            "not" => {
+                let list = remove_operator_connector(expression_exploded.cdr(), "not")?;
+                let term_to_negate = from_expression_to_term(&list[0], infos)?;
+                assert_eq!(term_to_negate.typ(), term::typ::bool());
+                Ok(term::not(term_to_negate))
             }
-        }
+            "ite" => {
+                let list = remove_operator_connector(expression_exploded.cdr(), "ite")?;
+                let cond = from_expression_to_term(&list[0], infos)?;
+                let true_branch = from_expression_to_term(&list[1], infos)?;
+                let false_branch = from_expression_to_term(&list[2], infos)?;
+                assert_eq!(true_branch.typ(), false_branch.typ());
+                Ok(term::ite(cond, true_branch, false_branch))
+            }
+            bop_int!() => {
+                let list = remove_operator_connector(expression_exploded.cdr(), s)?;
+                let x = from_expression_to_term(&list[0], infos)?;
+                let y = from_expression_to_term(&list[1], infos)?;
+                assert_eq!(x.typ(), term::typ::int());
+                assert_eq!(y.typ(), term::typ::int());
+                match &**s {
+                    "=" => Ok(term::eq(x, y)),
+                    ">=" => Ok(term::ge(x, y)),
+                    ">" => Ok(term::gt(x, y)),
+                    "<=" => Ok(term::le(x, y)),
+                    "<" => Ok(term::lt(x, y)),
+                    "+" => Ok(term::add2(x, y)),
+                    "-" => Ok(term::sub2(x, y)),
+                    "*" => Ok(term::mul(vec![x, y])),
+                    _ => Err(Error::from_kind(errors::ErrorKind::Msg(format!(
+                        "Symbol {s} not recognised"
+                    )))),
+                }
+            }
+            bop_bool!() => {
+                let list = remove_operator_connector(expression_exploded.cdr(), s)?;
+                let terms = from_expression_to_boolean_terms(&list, infos)?;
+                for term in &terms {
+                    assert_eq!(term.typ(), term::typ::bool());
+                }
+                match &**s {
+                    "and" => Ok(term::and(terms)),
+                    "or" => Ok(term::or(terms)),
+                    _ => Err(Error::from_kind(errors::ErrorKind::Msg(format!(
+                        "Symbol {s} not recognised"
+                    )))),
+                }
+            }
+            _ => Err(Error::from_kind(errors::ErrorKind::Msg(
+                "Unknown symbol".to_string(),
+            ))),
+        },
 
         _ => Err(Error::from_kind(errors::ErrorKind::Msg(
             "The symbol should either an ite expression or a binary operator over integers"

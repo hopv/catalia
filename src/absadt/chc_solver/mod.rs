@@ -50,12 +50,11 @@ where
             // Eldarica determined SAT
             Ok(true) => return Ok(either::Left(())),
             // Eldarica determined UNSAT
-            Ok(false) =>
-                return Ok(either::Right((hyper_res::ResolutionProof::new(), false))),
+            Ok(false) => return Ok(either::Right((hyper_res::ResolutionProof::new(), false))),
             Err(err) => {
                 log_info!("Eldarica failed with {}", err);
                 return Ok(either::Right((hyper_res::ResolutionProof::new(), true)));
-            },
+            }
         }
     }
 
