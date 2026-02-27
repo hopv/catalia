@@ -282,65 +282,125 @@ fn create_provider() -> Res<Box<dyn LlmProvider>> {
 // Prompt construction
 // ---------------------------------------------------------------------------
 
+
 fn build_system_prompt() -> String {
-    r#"You are an expert in program verification and abstract interpretation.
+    r#"You are an expert in program verification, abstract interpretation, and Horn clause solving.
 
-You are helping synthesize catamorphism encoders for algebraic data types (ADTs).
-A catamorphism maps each constructor of an ADT to an integer-valued expression.
-For recursive arguments, the encoding function is applied recursively and the
-result is available as an integer parameter.
+Your task is to synthesize catamorphism encoders for algebraic data types (ADTs).
+A catamorphism maps each constructor of an ADT to a fixed-length tuple of integers.
+Each tuple component is defined as an SMT-LIB integer expression over the constructor's selector arguments.
 
-## Output Format
+A selector argument contributes parameters as follows:
 
-Produce EXACTLY one s-expression block. If the problem has multiple datatypes,
-include ALL of them in the same block:
+- If the selector has type Int:
+  it contributes exactly ONE integer parameter (its value).
 
-```
-(("DatatypeName1"
-  (Constructor1 (param1 param2 ...) expr1 expr2 ...)
-  (Constructor2 (param1 param2 ...) expr1 expr2 ...)
-  ...
+- If the selector has ADT type T, and T is encoded as an N-component tuple:
+  it contributes exactly N integer parameters, representing the recursive encoding result.
+
+Parameters appear in the SAME ORDER as selector declarations, and recursive components appear in tuple order.
+
+Your objective is to produce a sound and simple structural encoding. Prefer the smallest number of components sufficient to represent structural measures (for example length, size, sum, or similar).
+
+------------------------------------------------------------
+OUTPUT FORMAT (STRICT)
+------------------------------------------------------------
+
+Produce EXACTLY ONE s-expression block.
+Do NOT include explanations, comments, markdown, or any extra text.
+
+The structure must be:
+
+(
+  ("DatatypeName1"
+    ("Constructor1" (param1 param2 ...) expr1 expr2 ...)
+    ("Constructor2" (param1 param2 ...) expr1 expr2 ...)
+    ...
+  )
+  ("DatatypeName2"
+    ("Constructor1" (param1 ...) expr1 ...)
+    ...
+  )
 )
-("DatatypeName2"
-  (Constructor1 (param1 ...) expr1 ...)
-  ...
-))
-```
 
-Rules:
-- You MUST include an entry for EVERY datatype listed in the "Required Datatypes"
-  section below, with EVERY constructor for each datatype.
-- Each constructor maps to lambda expressions over its selector arguments.
-- For selectors whose type is the same ADT (recursive arguments), the parameter
-  represents the INTEGER result of recursively encoding that sub-term, not the
-  ADT value itself.
-- For selectors whose type is Int, the parameter is that integer value directly.
-- All result expressions must be integer-valued (using +, -, *, ite, etc.).
-- All constructors of a datatype must produce the same number of result expressions.
-- Use SMT-LIB syntax for expressions: (+ a b), (- a b), (* a b), (ite cond t f),
-  (= a b), (>= a b), (> a b), (<= a b), (< a b), (and ...), (or ...), (not ...).
-- Parameter names should be simple identifiers (no spaces or special chars).
-- If a constructor has no arguments (e.g., nil), use an empty parameter list ().
-- Wrap the entire output in a single top-level parenthesized list.
+------------------------------------------------------------
+MANDATORY RULES
+------------------------------------------------------------
 
-Example for integer list length:
-```
-(("IList"
-  (nil () 0)
-  (insert (x l) (+ l 1))
-))
-```
-Here `l` is the recursive encoding of the tail, and `x` is the integer head value.
+1. Include EVERY datatype listed in the Required Datatypes section.
+2. Include EVERY constructor of each datatype.
+3. Every constructor of the SAME datatype MUST produce the SAME number of result expressions.
+4. This number defines the encoding dimension of that datatype.
+5. Parameter lists MUST contain exactly one parameter per Int selector and exactly N parameters per recursive selector, where N is the encoding dimension of that recursive datatype.
+6. Constructors with no selectors MUST use an empty parameter list: ()
+7. All result expressions MUST be integer expressions.
+8. Use ONLY SMT-LIB syntax:
 
-Example for a 2-component encoding (length and sum):
-```
-(("IList"
-  (nil () 0 0)
-  (insert (x l_0 l_1) (+ l_0 1) (+ l_1 x))
-))
-```
-Here l_0 is the recursive length of the tail, l_1 is the recursive sum, and x is the head."#
-        .to_string()
+   (+ a b)
+   (- a b)
+   (* a b)
+   (ite cond then else)
+   (= a b)
+   (>= a b)
+   (> a b)
+   (<= a b)
+   (< a b)
+   (and ...)
+   (or ...)
+   (not ...)
+
+9. Do NOT use division, quantifiers, let bindings, or uninterpreted functions.
+10. Parameter names must be simple ASCII identifiers (example: x, y, l0, l1, r0).
+11. The entire output must be wrapped in ONE outer parenthesized list.
+
+------------------------------------------------------------
+PARAMETER ORDERING EXAMPLE
+------------------------------------------------------------
+
+Datatype:
+
+  cons(head:Int, tail:List)
+
+If List has a 2-component encoding, the parameters are:
+
+  (head tail_0 tail_1)
+
+NOT:
+
+  (head tail)
+
+------------------------------------------------------------
+EXAMPLE: length encoding
+------------------------------------------------------------
+
+(
+  ("IList"
+    ("nil" () 0)
+    ("cons" (x t) (+ t 1))
+  )
+)
+
+------------------------------------------------------------
+EXAMPLE: length and sum encoding
+------------------------------------------------------------
+
+(
+  ("IList"
+    ("nil" () 0 0)
+    ("cons" (x t_len t_sum)
+      (+ t_len 1)
+      (+ t_sum x)
+    )
+  )
+)
+
+------------------------------------------------------------
+CRITICAL
+------------------------------------------------------------
+
+Output ONLY the s-expression.
+Any additional text is invalid.
+"#.to_string()
 }
 
 /// Build the required datatypes section listing all datatypes and their constructors
