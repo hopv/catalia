@@ -215,6 +215,7 @@ impl<'original> AbsConf<'original> {
                 &mut self.solver,
                 &self.profiler,
                 &self.instance,
+                conf.llm_log_dir.clone(),
             )?;
         } else {
             learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
