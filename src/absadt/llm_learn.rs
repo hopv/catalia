@@ -120,8 +120,19 @@ impl LlmProvider for OpenAiProvider {
     }
     fn request(&self, messages: &[Message]) -> Res<String> {
         let url = format!("{}/v1/responses", self.base_url);
+
+        // The Responses API uses a top-level "instructions" field for system
+        // messages; "role: system" is not valid inside the "input" array.
+        let instructions: String = messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let input: Vec<serde_json::Value> = messages
             .iter()
+            .filter(|m| m.role != "system")
             .map(|m| {
                 serde_json::json!({
                     "role": m.role,
@@ -130,11 +141,14 @@ impl LlmProvider for OpenAiProvider {
             })
             .collect();
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "input": input,
             "temperature": 0.7,
         });
+        if !instructions.is_empty() {
+            body["instructions"] = serde_json::Value::String(instructions);
+        }
 
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(30))
