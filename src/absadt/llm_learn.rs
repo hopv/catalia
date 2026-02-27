@@ -595,6 +595,7 @@ fn parse_llm_response(
     // malformed input. Since LLM output is untrusted, catch panics and
     // convert them to Err so the retry loop can continue.
     let sexp_clone = sexp.clone();
+    // TODO: fix this, by returning a Result from the parser instead of panicking on errors
     let parse_result =
         panic::catch_unwind(move || catamorphism_parser::parse_catamorphism_str(&sexp_clone));
 
