@@ -358,15 +358,27 @@ The structure must be:
 
 (
   ("DatatypeName1"
-    ("Constructor1" (param1 param2 ...) expr1 expr2 ...)
-    ("Constructor2" (param1 param2 ...) expr1 expr2 ...)
+    ("Constructor1"
+      ((param1 param2 ...) expr1 expr2 ...)
+    )
+    ("Constructor2"
+      ((param1 param2 ...) expr1 expr2 ...)
+    )
     ...
   )
   ("DatatypeName2"
-    ("Constructor1" (param1 ...) expr1 ...)
+    ("Constructor1"
+      ((param1 ...) expr1 ...)
+    )
     ...
   )
 )
+
+IMPORTANT: each constructor body is wrapped in an EXTRA pair of parentheses.
+The inner list contains FIRST the parameter list, then the result expressions.
+("ConstructorName" ((params...) expr1 expr2 ...))
+                   ^                             ^
+                   extra outer parens around the entire body
 
 ------------------------------------------------------------
 MANDATORY RULES
@@ -420,8 +432,12 @@ EXAMPLE: length encoding
 
 (
   ("IList"
-    ("nil" () 0)
-    ("cons" (x t) (+ t 1))
+    ("nil"
+      (() 0)
+    )
+    ("cons"
+      ((x t) (+ t 1))
+    )
   )
 )
 
@@ -431,10 +447,14 @@ EXAMPLE: length and sum encoding
 
 (
   ("IList"
-    ("nil" () 0 0)
-    ("cons" (x t_len t_sum)
-      (+ t_len 1)
-      (+ t_sum x)
+    ("nil"
+      (() 0 0)
+    )
+    ("cons"
+      ((x t_len t_sum)
+        (+ t_len 1)
+        (+ t_sum x)
+      )
     )
   )
 )
