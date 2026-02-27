@@ -97,7 +97,8 @@ impl OpenAiProvider {
             .map_err(|_| Error::from_kind(crate::errors::ErrorKind::Msg(
                 "OPENAI_API_KEY not set".into(),
             )))?;
-        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".into());
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-5-nano".into());
+        log_info!("Using OpenAI model: {}", model);
         let mut base_url =
             std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
         // Strip trailing /v1 to avoid double /v1/v1/... when we append the path
@@ -732,11 +733,10 @@ pub fn work(
     let provider = match create_provider() {
         Ok(p) => p,
         Err(e) => {
-            log_info!(
-                "LLM provider unavailable ({}), falling back to template-based learning",
+            panic!(
+                "LLM provider unavailable: {}",
                 e
             );
-            return super::learn::work(encs, cex, solver, profiler);
         }
     };
     log_info!("Using {} for LLM-based encoder learning", provider.name());
