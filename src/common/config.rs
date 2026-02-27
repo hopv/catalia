@@ -1166,6 +1166,8 @@ pub struct Config {
     pub idx_arg: bool,
     /// Use LLM-based encoder learning instead of template-based synthesis.
     pub use_llm_learn: bool,
+    /// Directory to write LLM query logs into. Logging is disabled when None.
+    pub llm_log_dir: Option<PathBuf>,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1327,6 +1329,10 @@ impl Config {
         let use_llm_learn = std::env::var("HOICE_USE_LLM_LEARN")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
             .unwrap_or_else(|_| bool_of_matches(&matches, "use_llm_learn"));
+        let llm_log_dir = std::env::var("HOICE_LLM_LOG_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| matches.value_of("llm_log_dir").map(PathBuf::from));
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
@@ -1358,6 +1364,7 @@ impl Config {
             use_eldarica_cex,
             idx_arg,
             use_llm_learn,
+            llm_log_dir,
             instance,
             preproc,
             spacer,
@@ -1553,6 +1560,15 @@ impl Config {
                     .validator(bool_validator)
                     .value_name(bool_format)
                     .default_value("off")
+                    .takes_value(true)
+                    .number_of_values(1)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("llm_log_dir")
+                    .long("--llm-log-dir")
+                    .help("directory to write LLM query logs (input/output per attempt); logging disabled if not set")
+                    .value_name("path")
                     .takes_value(true)
                     .number_of_values(1)
                     .display_order(order()),
