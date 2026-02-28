@@ -1016,4 +1016,156 @@ This encodes both length and sum."#;
         // Should be Err, not a panic
         assert!(result.is_err());
     }
+
+    // ---------------------------------------------------------------------------
+    // Helpers for correct-case tests
+    // ---------------------------------------------------------------------------
+
+    use crate::absadt::enc::{Approx, Enc};
+
+    /// Build a minimal initial encoder map for `List<Int>` with n_params=1.
+    /// The actual approx bodies don't matter here; only the Typ key is used by
+    /// `build_encoding_from_approx` to look up the datatype name.
+    fn make_list_encs() -> BTreeMap<Typ, Encoder> {
+        dtyp::create_list_dtyp();
+        let list_typ = typ::dtyp(dtyp::get("List").unwrap(), vec![typ::int()].into());
+        let mut approxs = BTreeMap::new();
+        approxs.insert("nil".to_string(), Approx::len_nil());
+        approxs.insert("insert".to_string(), Approx::len_cons());
+        let enc = Enc {
+            typ: list_typ.clone(),
+            n_params: 1,
+            approxs,
+        };
+        let mut encs = BTreeMap::new();
+        encs.insert(list_typ, enc);
+        encs
+    }
+
+    // ---------------------------------------------------------------------------
+    // Correct-case tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_llm_response_valid_length_encoding() {
+        // 1-param length encoding for List<Int>.
+        // "insert" has head:Int (1 param) + tail:List (1 recursive param) = 2 params.
+        let response = r#"(
+  ("List"
+    ("nil"
+      (() 0)
+    )
+    ("insert"
+      ((head tail) (+ tail 1))
+    )
+  )
+)"#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let new_encs = result.unwrap();
+        assert_eq!(new_encs.len(), 1);
+        let enc = new_encs.values().next().unwrap();
+        assert_eq!(enc.n_params, 1);
+        assert!(enc.approxs.contains_key("nil"));
+        assert!(enc.approxs.contains_key("insert"));
+    }
+
+    #[test]
+    fn test_parse_llm_response_valid_two_param_encoding() {
+        // 2-param (length + sum) encoding for List<Int>.
+        // "insert": head:Int (1) + tail:List (2 recursive) = 3 params total.
+        let response = r#"(
+  ("List"
+    ("nil"
+      (() 0 0)
+    )
+    ("insert"
+      ((head t0 t1)
+        (+ t0 1)
+        (+ t1 head)
+      )
+    )
+  )
+)"#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let new_encs = result.unwrap();
+        let enc = new_encs.values().next().unwrap();
+        assert_eq!(enc.n_params, 2);
+        // nil produces (0, 0), insert produces (t0+1, t1+head)
+        assert_eq!(enc.approxs["nil"].terms.len(), 2);
+        assert_eq!(enc.approxs["insert"].terms.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_llm_response_valid_in_markdown_fences() {
+        // Same length encoding but wrapped in markdown, as an LLM would actually respond.
+        let response = r#"Here is the encoding:
+
+```smt2
+(
+  ("List"
+    ("nil"
+      (() 0)
+    )
+    ("insert"
+      ((head tail) (+ tail 1))
+    )
+  )
+)
+```
+
+This encodes the length of the list."#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let enc = result.unwrap().into_values().next().unwrap();
+        assert_eq!(enc.n_params, 1);
+    }
+
+    #[test]
+    fn test_parse_llm_response_valid_with_ite() {
+        // Encoding that uses ite, a common LLM pattern.
+        // Encodes max(head, max_of_tail).
+        let response = r#"(
+  ("List"
+    ("nil"
+      (() 0)
+    )
+    ("insert"
+      ((head tail) (ite (>= head tail) head tail))
+    )
+  )
+)"#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    }
+
+    #[test]
+    fn test_parse_llm_response_wrong_datatype_name() {
+        // Response uses a datatype name not present in encs → error from build_encoding_from_approx.
+        let response = r#"(
+  ("WrongName"
+    ("nil"
+      (() 0)
+    )
+    ("insert"
+      ((head tail) (+ tail 1))
+    )
+  )
+)"#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_llm_response_no_sexp() {
+        let encs = make_list_encs();
+        let result = parse_llm_response("sorry, I cannot help with that", &encs);
+        assert!(result.is_err());
+    }
 }
