@@ -1164,6 +1164,10 @@ pub struct Config {
     pub use_eldarica_cex: bool,
     /// Force idx! argument encoding in Eldarica CEX mode (Spacer always uses idx! encoding).
     pub idx_arg: bool,
+    /// Use LLM-based encoder learning instead of template-based synthesis.
+    pub use_llm_learn: bool,
+    /// Directory to write LLM query logs into. Logging is disabled when None.
+    pub llm_log_dir: Option<PathBuf>,
 
     /// Instance and factory configuration.
     pub instance: InstanceConf,
@@ -1321,6 +1325,14 @@ impl Config {
         let idx_arg = std::env::var("HOICE_IDX_ARG")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
             .unwrap_or_else(|_| matches.is_present("idx_arg"));
+        // Check environment variable first, then fall back to CLI arg
+        let use_llm_learn = std::env::var("HOICE_USE_LLM_LEARN")
+            .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
+            .unwrap_or_else(|_| bool_of_matches(&matches, "use_llm_learn"));
+        let llm_log_dir = std::env::var("HOICE_LLM_LOG_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| matches.value_of("llm_log_dir").map(PathBuf::from));
         // Catamorphism file
         let catamorphism_file = matches
             .value_of("catamorphism input file")
@@ -1328,9 +1340,7 @@ impl Config {
 
         let instance = InstanceConf::new(&matches);
         let preproc = PreprocConf::new(&matches);
-        let spacer = matches
-            .value_of("spacer")
-            .map(|s| s.to_string());
+        let spacer = matches.value_of("spacer").map(|s| s.to_string());
         let solver = SmtConf::new(&matches);
         let ice = IceConf::new(&matches);
         let teacher = TeacherConf::new(&matches);
@@ -1353,6 +1363,8 @@ impl Config {
             no_eldarica,
             use_eldarica_cex,
             idx_arg,
+            use_llm_learn,
+            llm_log_dir,
             instance,
             preproc,
             spacer,
@@ -1539,7 +1551,26 @@ impl Config {
                 Arg::new("idx_arg")
                     .long("--idx-arg")
                     .help("force idx! argument encoding even in Eldarica CEX mode (Spacer always uses idx! encoding)")
-                    .takes_value(false)
+                    .takes_value(false),
+            )
+            .arg(
+                Arg::new("use_llm_learn")
+                    .long("--llm-learn")
+                    .help("use LLM-based encoder learning instead of template synthesis")
+                    .validator(bool_validator)
+                    .value_name(bool_format)
+                    .default_value("off")
+                    .takes_value(true)
+                    .number_of_values(1)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("llm_log_dir")
+                    .long("--llm-log-dir")
+                    .help("directory to write LLM query logs (input/output per attempt); logging disabled if not set")
+                    .value_name("path")
+                    .takes_value(true)
+                    .number_of_values(1)
                     .display_order(order()),
             )
             .arg(
