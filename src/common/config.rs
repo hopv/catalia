@@ -1160,6 +1160,8 @@ pub struct Config {
     pub no_hoice: bool,
     /// Disable eldarica in the Catalia portfolio solver.
     pub no_eldarica: bool,
+    /// Disable spacer in the Catalia portfolio solver.
+    pub no_spacer: bool,
     /// Use Eldarica instead of Spacer for counterexample generation.
     pub use_eldarica_cex: bool,
     /// Force idx! argument encoding in Eldarica CEX mode (Spacer always uses idx! encoding).
@@ -1314,6 +1316,7 @@ impl Config {
 
         let no_hoice = matches.is_present("no_hoice");
         let no_eldarica = matches.is_present("no_eldarica");
+        let no_spacer = matches.is_present("no_spacer");
         // Check environment variable first, then fall back to CLI arg
         let use_eldarica_cex = std::env::var("HOICE_USE_ELDARICA_CEX")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
@@ -1351,6 +1354,7 @@ impl Config {
             term_simpl,
             no_hoice,
             no_eldarica,
+            no_spacer,
             use_eldarica_cex,
             idx_arg,
             instance,
@@ -1521,6 +1525,13 @@ impl Config {
                 Arg::new("no_eldarica")
                     .long("--no-eldarica")
                     .help("disable eldarica in the Catalia portfolio solver")
+                    .takes_value(false)
+                    .display_order(order()),
+            )
+            .arg(
+                Arg::new("no_spacer")
+                    .long("--no-spacer")
+                    .help("disable spacer in the Catalia portfolio solver")
                     .takes_value(false)
                     .display_order(order()),
             )

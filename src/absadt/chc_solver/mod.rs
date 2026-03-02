@@ -6,7 +6,7 @@ use crate::absadt::hyper_res;
 use crate::common::*;
 pub use eld::{run_eldarica, run_eldarica_cex};
 pub use hoice::run_hoice;
-pub use spacer::run_spacer;
+pub use spacer::{run_spacer, run_spacer_portfolio};
 
 const CHECK_CHC_TIMEOUT: usize = 60;
 
@@ -41,6 +41,12 @@ pub trait CHCSolver {
     fn check_sat(self) -> Res<bool>;
 }
 
+/// Try each enabled solver in order and return the first conclusive result.
+///
+/// The `eldarica_error` flag in the `Right` variant signals that Eldarica
+/// encountered a problem during this phase; when `use_eldarica_cex` is set,
+/// the caller uses this flag to decide whether to attempt Eldarica for CEX
+/// generation.
 pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
 where
     I: Instance,
@@ -67,5 +73,14 @@ where
             return Ok(either::Left(()));
         }
     }
+
+    if !conf.no_spacer {
+        match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT)) {
+            Ok(true) => return Ok(either::Left(())),
+            Ok(false) => {},
+            Err(e) => log_info!("Spacer (portfolio) failed with {}", e),
+        }
+    }
+
     Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
 }
