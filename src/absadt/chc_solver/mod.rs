@@ -41,13 +41,27 @@ pub trait CHCSolver {
     fn check_sat(self) -> Res<bool>;
 }
 
+/// Dispatch to sequential or parallel portfolio depending on configuration.
+pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
+where
+    I: Instance + Sync,
+{
+    if conf.parallel_portfolio {
+        portfolio_parallel(instance)
+    } else {
+        portfolio_sequential(instance)
+    }
+}
+
 /// Try each enabled solver in order and return the first conclusive result.
 ///
 /// The `eldarica_error` flag in the `Right` variant signals that Eldarica
 /// encountered a problem during this phase; when `use_eldarica_cex` is set,
 /// the caller uses this flag to decide whether to attempt Eldarica for CEX
 /// generation.
-pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
+fn portfolio_sequential<I>(
+    instance: &I,
+) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
 where
     I: Instance,
 {
@@ -83,4 +97,68 @@ where
     }
 
     Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
+}
+
+/// Run all enabled solvers in parallel and return the first conclusive result.
+///
+/// All solvers share the same per-solver timeout (`CHECK_CHC_TIMEOUT`), so the
+/// total wall-clock time is bounded by a single timeout regardless of how many
+/// solvers are active.  `std::thread::scope` guarantees every spawned thread
+/// finishes before this function returns.
+fn portfolio_parallel<I>(
+    instance: &I,
+) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
+where
+    I: Instance + Sync,
+{
+    use std::sync::mpsc;
+
+    // Each thread sends `Left(())` for SAT or `Right(eldarica_error)` for UNSAT.
+    let (tx, rx) = mpsc::channel::<either::Either<(), bool>>();
+
+    std::thread::scope(|s| {
+        if !conf.no_eldarica {
+            let tx = tx.clone();
+            s.spawn(move || {
+                match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false) {
+                    Ok(true) => { let _ = tx.send(either::Left(())); },
+                    Ok(false) => { let _ = tx.send(either::Right(false)); },
+                    Err(e) => { log_info!("Eldarica failed with {}", e); },
+                }
+            });
+        }
+
+        if !conf.no_hoice {
+            let tx = tx.clone();
+            s.spawn(move || {
+                match run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false) {
+                    Ok(true) => { let _ = tx.send(either::Left(())); },
+                    Ok(false) => { let _ = tx.send(either::Right(true)); },
+                    Err(e) => { log_info!("HoIce failed with {}", e); },
+                }
+            });
+        }
+
+        if !conf.no_spacer {
+            let tx = tx.clone();
+            s.spawn(move || {
+                match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT)) {
+                    Ok(true) => { let _ = tx.send(either::Left(())); },
+                    Ok(false) => { let _ = tx.send(either::Right(true)); },
+                    Err(e) => { log_info!("Spacer (portfolio) failed with {}", e); },
+                }
+            });
+        }
+
+        // Drop the main sender so the channel closes once all threads finish.
+        drop(tx);
+
+        match rx.recv() {
+            Ok(either::Left(())) => Ok(either::Left(())),
+            Ok(either::Right(eldarica_error)) =>
+                Ok(either::Right((hyper_res::ResolutionProof::new(), eldarica_error))),
+            // All solvers failed without a result.
+            Err(_) => Ok(either::Right((hyper_res::ResolutionProof::new(), true))),
+        }
+    })
 }
