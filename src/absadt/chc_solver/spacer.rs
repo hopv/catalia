@@ -68,7 +68,7 @@ pub struct Spacer {
 
 impl Drop for Spacer {
     fn drop(&mut self) {
-        self.child.kill().unwrap();
+        let _ = self.child.kill();
     }
 }
 
