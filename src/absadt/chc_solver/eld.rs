@@ -130,6 +130,23 @@ where
     eld.check_sat()
 }
 
+/// Like [`run_eldarica`] but registers the child PID in `pids` before blocking
+/// on I/O so that the caller can SIGTERM the process for prompt cancellation.
+pub fn run_eldarica_cancellable<I>(
+    instance: &I,
+    timeout: Option<usize>,
+    encode_tag: bool,
+    pids: &std::sync::Mutex<Vec<u32>>,
+) -> Res<bool>
+where
+    I: InstanceT,
+{
+    let mut eld = Eldarica::new(timeout, false)?;
+    pids.lock().expect("pid mutex poisoned").push(eld.child.id());
+    eld.dump_instance(instance, encode_tag)?;
+    eld.check_sat()
+}
+
 /// Run Eldarica with counterexample generation
 ///
 /// Returns `Left(())` if sat, `Right(proof)` if unsat with counterexample
