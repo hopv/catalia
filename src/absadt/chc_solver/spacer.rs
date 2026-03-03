@@ -129,12 +129,12 @@ impl Spacer {
     fn new_portfolio() -> Res<Spacer> {
         Self::new_with_options(&OPTION_PORTFOLIO)
     }
-    fn dump_instance_portfolio<I>(&mut self, instance: &I) -> Res<()>
+    fn dump_instance_portfolio<I>(&mut self, instance: &I, encode_tag: bool) -> Res<()>
     where
         I: InstanceT,
     {
         // No proof-production options needed for a plain sat/unsat check.
-        instance.dump_as_smt2(&mut self.stdin, "", true)?;
+        instance.dump_as_smt2(&mut self.stdin, "", encode_tag)?;
         Ok(())
     }
 
@@ -193,7 +193,7 @@ where
 /// Run Spacer in portfolio mode: plain sat/unsat check without proof generation.
 /// Uses `OPTION_PORTFOLIO` (omits the four proof-correctness flags) so that
 /// Spacer can apply its full preprocessing transforms for better performance.
-pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>) -> Res<bool>
+pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
 where
     I: InstanceT,
 {
@@ -201,6 +201,6 @@ where
     if let Some(sec) = timeout {
         spacer.set_timeout(sec)?;
     }
-    spacer.dump_instance_portfolio(instance)?;
+    spacer.dump_instance_portfolio(instance, encode_tag)?;
     spacer.check_sat()
 }

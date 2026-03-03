@@ -75,7 +75,7 @@ where
     }
 
     if !conf.no_spacer {
-        match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT)) {
+        match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT), false) {
             Ok(true) => return Ok(either::Left(())),
             Ok(false) => {},
             Err(e) => log_info!("Spacer (portfolio) failed with {}", e),
