@@ -10,7 +10,10 @@ use crate::common::*;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-const OPTION: [&str; 14] = [
+/// Options used when invoking Spacer for counterexample (proof) generation.
+/// The first four options disable transformations that would otherwise corrupt
+/// the hyper-resolution proof structure.
+const OPTION_CEX: [&str; 14] = [
     // Disable inlining for obtaining resolution proofs appropriately
     // see https://github.com/Z3Prover/z3/issues/2430#issuecomment-514351694
     // and https://github.com/Z3Prover/z3/issues/6848
@@ -27,6 +30,23 @@ const OPTION: [&str; 14] = [
     "fp.xform.inline_linear=false",
     "fp.xform.inline_eager=false",
     "fp.xform.subsumption_checker=false",
+    // Spacer configuration taken from CHC-COMP
+    "fp.xform.tail_simplifier_pve=false",
+    "fp.validate=true",
+    "fp.spacer.mbqi=false",
+    "fp.spacer.use_iuc=true",
+    "fp.spacer.global=true",
+    "fp.spacer.expand_bnd=true",
+    "fp.spacer.q3.use_qgen=true",
+    "fp.spacer.q3.instantiate=true",
+    "fp.spacer.q3=true",
+    "fp.spacer.ground_pobs=false",
+];
+
+/// Options used when invoking Spacer in portfolio mode (pure sat/unsat check,
+/// no proof required).  The four proof-correctness options from OPTION_CEX are
+/// omitted so that Spacer can apply its full set of preprocessing transforms.
+const OPTION_PORTFOLIO: [&str; 10] = [
     // Spacer configuration taken from CHC-COMP
     "fp.xform.tail_simplifier_pve=false",
     "fp.validate=true",
@@ -83,8 +103,8 @@ impl Spacer {
     }
 }
 impl Spacer {
-    fn new() -> Res<Spacer> {
-        let mut args = OPTION.to_vec();
+    fn new_with_options(options: &[&str]) -> Res<Spacer> {
+        let mut args = options.to_vec();
         let path = conf.spacer.clone().unwrap_or("z3".to_string());
         args.push("-in");
         let mut child = Command::new(path)
@@ -101,6 +121,23 @@ impl Spacer {
             stdout,
         })
     }
+
+    fn new() -> Res<Spacer> {
+        Self::new_with_options(&OPTION_CEX)
+    }
+
+    fn new_portfolio() -> Res<Spacer> {
+        Self::new_with_options(&OPTION_PORTFOLIO)
+    }
+    fn dump_instance_portfolio<I>(&mut self, instance: &I, encode_tag: bool) -> Res<()>
+    where
+        I: InstanceT,
+    {
+        // No proof-production options needed for a plain sat/unsat check.
+        instance.dump_as_smt2(&mut self.stdin, "", encode_tag)?;
+        Ok(())
+    }
+
     fn get_proof(&mut self) -> Res<hyper_res::ResolutionProof> {
         self.write_all(b"(get-proof)\n")?;
         self.write_all(b"(exit)\n")?;
@@ -151,4 +188,19 @@ where
         let proof = spacer.get_proof()?;
         Ok(either::Right(proof))
     }
+}
+
+/// Run Spacer in portfolio mode: plain sat/unsat check without proof generation.
+/// Uses `OPTION_PORTFOLIO` (omits the four proof-correctness flags) so that
+/// Spacer can apply its full preprocessing transforms for better performance.
+pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+where
+    I: InstanceT,
+{
+    let mut spacer = Spacer::new_portfolio()?;
+    if let Some(sec) = timeout {
+        spacer.set_timeout(sec)?;
+    }
+    spacer.dump_instance_portfolio(instance, encode_tag)?;
+    spacer.check_sat()
 }
