@@ -1,13 +1,15 @@
+use super::CancelGroup;
 use super::Instance as InstanceT;
 use crate::absadt::eld_cex;
 use crate::absadt::hyper_res;
 use crate::common::*;
 use std::borrow::Cow;
 use std::io::BufReader;
+use command_group::CommandGroup;
 use std::process::{Command, Stdio};
 
 pub struct Eldarica {
-    child: std::process::Child,
+    child: command_group::GroupChild,
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
 }
@@ -29,9 +31,9 @@ impl Eldarica {
             .args(args.iter().map(|s| s.as_ref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
@@ -70,7 +72,8 @@ impl Eldarica {
 
         let res = inner(stdin, stdout);
         // kill child process before returning
-        child.kill().unwrap();
+        let _ = child.kill();
+        let _ = child.wait(); // reap to prevent zombie
 
         let line = res?;
 
@@ -105,7 +108,8 @@ impl Eldarica {
 
         let res = inner(stdin, stdout);
         // kill child process before returning
-        child.kill().unwrap();
+        let _ = child.kill();
+        let _ = child.wait(); // reap to prevent zombie
 
         let output = res?;
 
@@ -126,6 +130,24 @@ where
     I: InstanceT,
 {
     let mut eld = Eldarica::new(timeout, false)?;
+    eld.dump_instance(instance, encode_tag)?;
+    eld.check_sat()
+}
+
+/// Like [`run_eldarica`] but registers the child's process-group ID (pgid)
+/// with `cancel` before blocking on I/O so that the caller can signal the
+/// entire process group for prompt cancellation.
+pub fn run_eldarica_cancellable<I>(
+    instance: &I,
+    timeout: Option<usize>,
+    encode_tag: bool,
+    cancel: &CancelGroup,
+) -> Res<bool>
+where
+    I: InstanceT,
+{
+    let mut eld = Eldarica::new(timeout, false)?;
+    cancel.register(eld.child.id());
     eld.dump_instance(instance, encode_tag)?;
     eld.check_sat()
 }

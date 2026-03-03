@@ -1,12 +1,14 @@
+use super::CancelGroup;
 use super::CHCSolver;
 use super::Instance as InstanceT;
 use crate::common::*;
 use std::borrow::Cow;
 use std::io::BufReader;
+use command_group::CommandGroup;
 use std::process::{Command, Stdio};
 
 pub struct Hoice {
-    child: std::process::Child,
+    child: command_group::GroupChild,
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
 }
@@ -25,9 +27,9 @@ impl Hoice {
             .args(args.iter().map(|s| s.as_ref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
@@ -52,7 +54,8 @@ impl CHCSolver for Hoice {
 
         self.stdout.read_to_string(&mut line)?;
 
-        self.child.kill().unwrap();
+        let _ = self.child.kill();
+        let _ = self.child.wait(); // reap to prevent zombie
 
         if line.starts_with("sat") {
             Ok(true)
@@ -78,6 +81,24 @@ where
     I: InstanceT,
 {
     let mut hoice = Hoice::new(timeout)?;
+    hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
+    hoice.check_sat()
+}
+
+/// Like [`run_hoice`] but registers the child's process-group ID (pgid)
+/// with `cancel` before blocking on I/O so that the caller can signal the
+/// entire process group for prompt cancellation.
+pub fn run_hoice_cancellable<I>(
+    instance: &I,
+    timeout: Option<usize>,
+    encode_tag: bool,
+    cancel: &CancelGroup,
+) -> Res<bool>
+where
+    I: InstanceT,
+{
+    let mut hoice = Hoice::new(timeout)?;
+    cancel.register(hoice.child.id());
     hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
     hoice.check_sat()
 }
