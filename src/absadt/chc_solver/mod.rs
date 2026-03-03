@@ -114,17 +114,44 @@ impl CancelGroup {
         std::sync::Arc::new(Self(std::sync::Mutex::new((false, Vec::new()))))
     }
 
-    /// Register `pid`.  If already cancelled, kills it immediately.
-    fn register(&self, pid: u32) {
+    /// Register `pgid`.  If already cancelled, kills it immediately.
+    fn register(&self, pgid: u32) {
         let mut g = self.0.lock().expect("cancel group poisoned");
-        if g.0 { kill_pid(pid); } else { g.1.push(pid); }
+        if g.0 { kill_group_now(pgid); } else { g.1.push(pgid); }
     }
 
-    /// Mark as cancelled and kill every registered process.
+    /// Mark as cancelled and kill every registered process group.
+    ///
+    /// Sends SIGTERM to all groups simultaneously, polls for up to 500 ms,
+    /// then sends SIGKILL to any survivors.
     fn cancel(&self) {
-        let mut g = self.0.lock().expect("cancel group poisoned");
-        g.0 = true;
-        for pid in g.1.drain(..) { kill_pid(pid); }
+        // Drain vec and set flag under lock; release before sleeping.
+        let pgids: Vec<u32> = {
+            let mut g = self.0.lock().expect("cancel group poisoned");
+            g.0 = true;
+            g.1.drain(..).collect()
+        };
+
+        // Send SIGTERM to all groups simultaneously.
+        #[cfg(unix)]
+        for &pgid in &pgids { signal_group(pgid, libc::SIGTERM); }
+
+        // Poll for up to 500 ms, checking all groups together.
+        #[cfg(unix)] {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(500);
+            let mut alive: Vec<u32> = pgids.clone();
+            while !alive.is_empty() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                // kill(-pgid, 0) returns -1/ESRCH when the group is gone.
+                alive.retain(|&pgid| unsafe {
+                    libc::kill(-(pgid as libc::pid_t), 0) == 0
+                });
+            }
+            // SIGKILL any survivors.
+            for &pgid in &alive { signal_group(pgid, libc::SIGKILL); }
+        }
+        #[cfg(not(unix))] let _ = pgids;
     }
 
     /// True after `cancel()` has been called.
@@ -133,16 +160,24 @@ impl CancelGroup {
     }
 }
 
-/// Kill a process by PID (SIGKILL, consistent with `Child::kill()`).
+/// Send `sig` to the process group identified by `pgid`.
 ///
-/// On non-Unix platforms this is a no-op; the process will stop once its
-/// per-solver timeout fires, which is acceptable.
-fn kill_pid(pid: u32) {
-    #[cfg(unix)]
-    // SAFETY: `pid` is a child process we spawned.  Sending SIGKILL to a
-    // zombie (exited but not yet reaped) returns 0 on Linux, so this is
-    // safe even when the process has already exited.
-    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+/// Using a negative pid argument targets the entire process group, so
+/// subprocesses (e.g. the JVM launched by the Eldarica shell script) are
+/// also signalled.
+#[cfg(unix)]
+fn signal_group(pgid: u32, sig: libc::c_int) -> libc::c_int {
+    // SAFETY: Sending a signal to a process group we own is safe.
+    // Sending to a group that has already exited returns -1/ESRCH, which we ignore.
+    unsafe { libc::kill(-(pgid as libc::pid_t), sig) }
+}
+#[cfg(not(unix))]
+fn signal_group(_: u32, _: i32) -> i32 { 0 }
+
+/// Immediate SIGKILL to a process group (no grace period).
+fn kill_group_now(pgid: u32) {
+    #[cfg(unix)] { signal_group(pgid, libc::SIGKILL); }
+    #[cfg(not(unix))] let _ = pgid;
 }
 
 /// Run all enabled solvers in parallel and return the first conclusive result.

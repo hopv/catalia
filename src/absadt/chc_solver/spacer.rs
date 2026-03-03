@@ -8,6 +8,7 @@ use super::CancelGroup;
 use super::Instance as InstanceT;
 use crate::absadt::hyper_res;
 use crate::common::*;
+use command_group::CommandGroup;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
@@ -62,7 +63,7 @@ const OPTION_PORTFOLIO: [&str; 10] = [
 ];
 
 pub struct Spacer {
-    child: std::process::Child,
+    child: command_group::GroupChild,
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
 }
@@ -70,6 +71,7 @@ pub struct Spacer {
 impl Drop for Spacer {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = self.child.wait(); // reap to prevent zombie
     }
 }
 
@@ -112,9 +114,9 @@ impl Spacer {
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Spacer {
             child,

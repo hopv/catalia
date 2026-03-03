@@ -4,10 +4,11 @@ use super::Instance as InstanceT;
 use crate::common::*;
 use std::borrow::Cow;
 use std::io::BufReader;
+use command_group::CommandGroup;
 use std::process::{Command, Stdio};
 
 pub struct Hoice {
-    child: std::process::Child,
+    child: command_group::GroupChild,
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
 }
@@ -26,9 +27,9 @@ impl Hoice {
             .args(args.iter().map(|s| s.as_ref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
@@ -54,6 +55,7 @@ impl CHCSolver for Hoice {
         self.stdout.read_to_string(&mut line)?;
 
         let _ = self.child.kill();
+        let _ = self.child.wait(); // reap to prevent zombie
 
         if line.starts_with("sat") {
             Ok(true)
