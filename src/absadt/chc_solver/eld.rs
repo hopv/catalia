@@ -1,3 +1,4 @@
+use super::CancelGroup;
 use super::Instance as InstanceT;
 use crate::absadt::eld_cex;
 use crate::absadt::hyper_res;
@@ -70,7 +71,7 @@ impl Eldarica {
 
         let res = inner(stdin, stdout);
         // kill child process before returning
-        child.kill().unwrap();
+        let _ = child.kill();
 
         let line = res?;
 
@@ -105,7 +106,7 @@ impl Eldarica {
 
         let res = inner(stdin, stdout);
         // kill child process before returning
-        child.kill().unwrap();
+        let _ = child.kill();
 
         let output = res?;
 
@@ -130,19 +131,20 @@ where
     eld.check_sat()
 }
 
-/// Like [`run_eldarica`] but registers the child PID in `pids` before blocking
-/// on I/O so that the caller can SIGTERM the process for prompt cancellation.
+/// Like [`run_eldarica`] but registers the child PID with `cancel` before
+/// blocking on I/O so that the caller can SIGKILL the process for prompt
+/// cancellation.
 pub fn run_eldarica_cancellable<I>(
     instance: &I,
     timeout: Option<usize>,
     encode_tag: bool,
-    pids: &std::sync::Mutex<Vec<u32>>,
+    cancel: &CancelGroup,
 ) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut eld = Eldarica::new(timeout, false)?;
-    pids.lock().expect("pid mutex poisoned").push(eld.child.id());
+    cancel.register(eld.child.id());
     eld.dump_instance(instance, encode_tag)?;
     eld.check_sat()
 }

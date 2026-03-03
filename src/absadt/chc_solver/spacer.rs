@@ -4,6 +4,7 @@
 //! unsat-core. This module is intended to be temporary; we should move the
 //! functionality to rsmt2 or some other place.
 
+use super::CancelGroup;
 use super::Instance as InstanceT;
 use crate::absadt::hyper_res;
 use crate::common::*;
@@ -205,20 +206,20 @@ where
     spacer.check_sat()
 }
 
-/// Like [`run_spacer_portfolio`] but registers the child PID in `pids` before
-/// blocking on I/O so that the caller can SIGTERM the process for prompt
-/// cancellation.
+/// Like [`run_spacer_portfolio`] but registers the child PID with `cancel`
+/// before blocking on I/O so that the caller can SIGKILL the process for
+/// prompt cancellation.
 pub fn run_spacer_portfolio_cancellable<I>(
     instance: &I,
     timeout: Option<usize>,
     encode_tag: bool,
-    pids: &std::sync::Mutex<Vec<u32>>,
+    cancel: &CancelGroup,
 ) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut spacer = Spacer::new_portfolio()?;
-    pids.lock().expect("pid mutex poisoned").push(spacer.child.id());
+    cancel.register(spacer.child.id());
     if let Some(sec) = timeout {
         spacer.set_timeout(sec)?;
     }
