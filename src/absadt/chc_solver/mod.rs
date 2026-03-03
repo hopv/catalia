@@ -151,7 +151,7 @@ where
             let tx = tx.clone();
             let pids = Arc::clone(&pids);
             s.spawn(move || {
-                match spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), &pids) {
+                match spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &pids) {
                     Ok(true)  => { let _ = tx.send(either::Left(())); },
                     Ok(false) => { let _ = tx.send(either::Right(true)); },
                     Err(e)    => { log_info!("Spacer (portfolio) failed with {}", e); },
