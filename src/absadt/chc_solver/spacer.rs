@@ -211,6 +211,7 @@ where
 pub fn run_spacer_portfolio_cancellable<I>(
     instance: &I,
     timeout: Option<usize>,
+    encode_tag: bool,
     pids: &std::sync::Mutex<Vec<u32>>,
 ) -> Res<bool>
 where
@@ -221,6 +222,6 @@ where
     if let Some(sec) = timeout {
         spacer.set_timeout(sec)?;
     }
-    spacer.dump_instance_portfolio(instance)?;
+    spacer.dump_instance_portfolio(instance, encode_tag)?;
     spacer.check_sat()
 }
