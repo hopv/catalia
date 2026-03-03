@@ -101,51 +101,60 @@ where
 
 /// Run all enabled solvers in parallel and return the first conclusive result.
 ///
-/// All solvers share the same per-solver timeout (`CHECK_CHC_TIMEOUT`), so the
-/// total wall-clock time is bounded by a single timeout regardless of how many
-/// solvers are active.  `std::thread::scope` guarantees every spawned thread
-/// finishes before this function returns.
+/// Each solver thread registers its child process PID before blocking on I/O.
+/// Once the first result arrives, all remaining child processes are sent
+/// SIGTERM so their stdout pipes close and their threads unblock immediately.
+/// `std::thread::scope` then joins the (now-quick-to-exit) threads before
+/// returning.  The latency after the winning solver finishes is bounded by
+/// process teardown time (typically milliseconds), not by `CHECK_CHC_TIMEOUT`.
 fn portfolio_parallel<I>(
     instance: &I,
 ) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
 where
     I: Instance + Sync,
 {
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
 
     // Each thread sends `Left(())` for SAT or `Right(eldarica_error)` for UNSAT.
     let (tx, rx) = mpsc::channel::<either::Either<(), bool>>();
+    // Child process PIDs registered by solver threads before they block on I/O.
+    // Drained and SIGTERMed once the first result arrives so the other threads
+    // unblock promptly.  Sending SIGTERM to an already-dead zombie is harmless.
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
 
-    std::thread::scope(|s| {
+    let result = std::thread::scope(|s| {
         if !conf.no_eldarica {
             let tx = tx.clone();
+            let pids = Arc::clone(&pids);
             s.spawn(move || {
-                match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false) {
-                    Ok(true) => { let _ = tx.send(either::Left(())); },
+                match eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &pids) {
+                    Ok(true)  => { let _ = tx.send(either::Left(())); },
                     Ok(false) => { let _ = tx.send(either::Right(false)); },
-                    Err(e) => { log_info!("Eldarica failed with {}", e); },
+                    Err(e)    => { log_info!("Eldarica failed with {}", e); },
                 }
             });
         }
 
         if !conf.no_hoice {
             let tx = tx.clone();
+            let pids = Arc::clone(&pids);
             s.spawn(move || {
-                match run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false) {
-                    Ok(true) => { let _ = tx.send(either::Left(())); },
+                match hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &pids) {
+                    Ok(true)  => { let _ = tx.send(either::Left(())); },
                     Ok(false) => { let _ = tx.send(either::Right(true)); },
-                    Err(e) => { log_info!("HoIce failed with {}", e); },
+                    Err(e)    => { log_info!("HoIce failed with {}", e); },
                 }
             });
         }
 
         if !conf.no_spacer {
             let tx = tx.clone();
+            let pids = Arc::clone(&pids);
             s.spawn(move || {
-                match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT)) {
-                    Ok(true) => { let _ = tx.send(either::Left(())); },
+                match spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), &pids) {
+                    Ok(true)  => { let _ = tx.send(either::Left(())); },
                     Ok(false) => { let _ = tx.send(either::Right(true)); },
-                    Err(e) => { log_info!("Spacer (portfolio) failed with {}", e); },
+                    Err(e)    => { log_info!("Spacer (portfolio) failed with {}", e); },
                 }
             });
         }
@@ -153,12 +162,24 @@ where
         // Drop the main sender so the channel closes once all threads finish.
         drop(tx);
 
-        match rx.recv() {
-            Ok(either::Left(())) => Ok(either::Left(())),
-            Ok(either::Right(eldarica_error)) =>
-                Ok(either::Right((hyper_res::ResolutionProof::new(), eldarica_error))),
-            // All solvers failed without a result.
-            Err(_) => Ok(either::Right((hyper_res::ResolutionProof::new(), true))),
+        // Block until the first conclusive result arrives (or all solvers fail).
+        let result = match rx.recv() {
+            Ok(r) => r,
+            Err(_) => either::Right(true),
+        };
+
+        // Kill all remaining solver processes so their threads unblock immediately.
+        #[cfg(unix)]
+        for pid in pids.lock().expect("pid mutex poisoned").drain(..) {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
         }
+
+        result
+    });
+
+    Ok(match result {
+        either::Left(()) => either::Left(()),
+        either::Right(eldarica_error) =>
+            either::Right((hyper_res::ResolutionProof::new(), eldarica_error)),
     })
 }

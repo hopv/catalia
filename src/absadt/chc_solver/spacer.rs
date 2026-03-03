@@ -204,3 +204,23 @@ where
     spacer.dump_instance_portfolio(instance, encode_tag)?;
     spacer.check_sat()
 }
+
+/// Like [`run_spacer_portfolio`] but registers the child PID in `pids` before
+/// blocking on I/O so that the caller can SIGTERM the process for prompt
+/// cancellation.
+pub fn run_spacer_portfolio_cancellable<I>(
+    instance: &I,
+    timeout: Option<usize>,
+    pids: &std::sync::Mutex<Vec<u32>>,
+) -> Res<bool>
+where
+    I: InstanceT,
+{
+    let mut spacer = Spacer::new_portfolio()?;
+    pids.lock().expect("pid mutex poisoned").push(spacer.child.id());
+    if let Some(sec) = timeout {
+        spacer.set_timeout(sec)?;
+    }
+    spacer.dump_instance_portfolio(instance)?;
+    spacer.check_sat()
+}
