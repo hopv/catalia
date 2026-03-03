@@ -85,9 +85,9 @@ where
     hoice.check_sat()
 }
 
-/// Like [`run_hoice`] but registers the child PID with `cancel` before
-/// blocking on I/O so that the caller can SIGKILL the process for prompt
-/// cancellation.
+/// Like [`run_hoice`] but registers the child's process-group ID (pgid)
+/// with `cancel` before blocking on I/O so that the caller can signal the
+/// entire process group for prompt cancellation.
 pub fn run_hoice_cancellable<I>(
     instance: &I,
     timeout: Option<usize>,

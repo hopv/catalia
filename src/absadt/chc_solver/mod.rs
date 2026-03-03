@@ -101,8 +101,12 @@ where
 
 /// Race-free cancellation group for parallel solver execution.
 ///
+/// Each registered value is a process-group ID (pgid).  On Unix, signals are
+/// sent to the entire group (via `kill(-pgid, sig)`) so subprocesses such as
+/// the JVM launched by the Eldarica shell script are also included.
+///
 /// `register` and `cancel` both hold the same mutex, so they are fully
-/// serialised: a PID registered concurrently with a `cancel` call is
+/// serialised: a pgid registered concurrently with a `cancel` call is
 /// either found in the vec and killed by `cancel`, or it sees the
 /// `cancelled` flag and is killed immediately inside `register`.
 /// There is therefore no window in which a late-registering thread can
@@ -162,9 +166,9 @@ impl CancelGroup {
 
 /// Send `sig` to the process group identified by `pgid`.
 ///
-/// Using a negative pid argument targets the entire process group, so
-/// subprocesses (e.g. the JVM launched by the Eldarica shell script) are
-/// also signalled.
+/// `libc::kill` treats a negative first argument as `-(pgid)`, which
+/// targets every process in the group — including subprocesses such as
+/// the JVM launched by the Eldarica shell script.
 #[cfg(unix)]
 fn signal_group(pgid: u32, sig: libc::c_int) -> libc::c_int {
     // SAFETY: Sending a signal to a process group we own is safe.
@@ -182,14 +186,18 @@ fn kill_group_now(pgid: u32) {
 
 /// Run all enabled solvers in parallel and return the first conclusive result.
 ///
-/// Each solver thread registers its child PID with a `CancelGroup` before
-/// blocking on I/O.  Once the first result arrives, `cancel()` kills every
-/// registered process so its thread unblocks immediately (killed process →
-/// stdout EOF → I/O call returns).  `std::thread::scope` then joins the
-/// now-quick-to-exit threads before returning.
+/// Each solver thread registers its child's process-group ID (pgid) with a
+/// `CancelGroup` before blocking on I/O.  Once the first result arrives,
+/// `cancel()` signals every registered process group so its thread unblocks
+/// immediately (killed process → stdout EOF → I/O call returns).
+/// `std::thread::scope` then joins the now-quick-to-exit threads before
+/// returning.
 ///
 /// Latency after the winning solver finishes is bounded by process teardown
 /// time (typically milliseconds), not by `CHECK_CHC_TIMEOUT`.
+///
+/// **Unix only.** Process-group signalling requires Unix; this function
+/// returns an error immediately on other platforms.
 ///
 /// The `eldarica_error` flag in the returned `Right` is only set when
 /// Eldarica fails for a genuine reason (not because we killed it ourselves).
@@ -199,6 +207,10 @@ fn portfolio_parallel<I>(
 where
     I: Instance + Sync,
 {
+    #[cfg(not(unix))]
+    bail!("--parallel-portfolio is not supported on this platform: \
+           process-group cancellation requires Unix");
+
     use std::sync::{mpsc, Arc};
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -263,7 +275,7 @@ where
             Err(_) => either::Right(()),
         };
 
-        // Kill every remaining solver process; threads unblock immediately.
+        // Signal every remaining solver process group; threads unblock immediately.
         cancel.cancel();
 
         result
