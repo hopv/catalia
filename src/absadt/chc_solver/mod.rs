@@ -41,7 +41,12 @@ pub trait CHCSolver {
     fn check_sat(self) -> Res<bool>;
 }
 
-/// Dispatch to sequential or parallel portfolio depending on configuration.
+/// Try each enabled solver in order and return the first conclusive result.
+///
+/// The `eldarica_error` flag in the `Right` variant signals that Eldarica
+/// encountered a problem during this phase; when `use_eldarica_cex` is set,
+/// the caller uses this flag to decide whether to attempt Eldarica for CEX
+/// generation.
 pub fn portfolio<I>(instance: &I) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
 where
     I: Instance + Sync,

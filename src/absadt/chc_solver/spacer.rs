@@ -225,3 +225,4 @@ where
     spacer.dump_instance_portfolio(instance, encode_tag)?;
     spacer.check_sat()
 }
+
