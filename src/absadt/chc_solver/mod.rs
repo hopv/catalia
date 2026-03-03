@@ -196,8 +196,8 @@ fn kill_group_now(pgid: u32) {
 /// Latency after the winning solver finishes is bounded by process teardown
 /// time (typically milliseconds), not by `CHECK_CHC_TIMEOUT`.
 ///
-/// **Unix only.** Process-group signalling requires Unix; this function
-/// returns an error immediately on other platforms.
+/// **Unix only.** `--parallel-portfolio` is rejected at argument-parse time
+/// on non-Unix platforms so this function is never reached there.
 ///
 /// The `eldarica_error` flag in the returned `Right` is only set when
 /// Eldarica fails for a genuine reason (not because we killed it ourselves).
@@ -207,10 +207,6 @@ fn portfolio_parallel<I>(
 where
     I: Instance + Sync,
 {
-    #[cfg(not(unix))]
-    bail!("--parallel-portfolio is not supported on this platform: \
-           process-group cancellation requires Unix");
-
     use std::sync::{mpsc, Arc};
     use std::sync::atomic::{AtomicBool, Ordering};
 

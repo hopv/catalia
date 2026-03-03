@@ -1320,6 +1320,14 @@ impl Config {
         let no_eldarica = matches.is_present("no_eldarica");
         let no_spacer = matches.is_present("no_spacer");
         let parallel_portfolio = matches.is_present("parallel_portfolio");
+        #[cfg(not(unix))]
+        if parallel_portfolio {
+            clap::Error::raw(
+                clap::ErrorKind::InvalidValue,
+                "--parallel-portfolio is not supported on this platform (Unix only)\n",
+            )
+            .exit();
+        }
         // Check environment variable first, then fall back to CLI arg
         let use_eldarica_cex = std::env::var("HOICE_USE_ELDARICA_CEX")
             .map(|v| v == "1" || v.to_lowercase() == "true" || v.to_lowercase() == "on")
