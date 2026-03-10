@@ -45,6 +45,7 @@ use crate::info::{Pred, VarInfo};
 
 use crate::unsat_core::UnsatRes;
 
+mod adt_graph;
 mod catamorphism_parser;
 mod chc;
 mod chc_solver;
