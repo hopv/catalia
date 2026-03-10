@@ -133,6 +133,22 @@ pub enum PartialTyp {
     Param(TPrmIdx),
 }
 
+impl PartialTyp {
+    pub fn get_adt_name(&self) -> Option<String> {
+        match self {
+            PartialTyp::DTyp(name, _, _) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn get_adt_args(&self) -> Option<Vec<&PartialTyp>> {
+        match self {
+            PartialTyp::DTyp(_, _, args) => Some(args.iter().map(|arg| arg).collect()),
+            _ => None,
+        }
+    }
+}
+
 impl From<Typ> for PartialTyp {
     fn from(typ: Typ) -> Self {
         PartialTyp::Typ(typ)
