@@ -1,158 +1,139 @@
-use petgraph::{
-    dot::Dot,
-    graph::{DiGraph, NodeIndex},
-};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::conf;
-use crate::dtyp;
-use crate::dtyp::PartialTyp;
-use crate::errors::{Error, ErrorKind, Res};
-use crate::term::typ::RTyp;
+use crate::absadt::enc::Encoder;
+use crate::errors::Res;
+use crate::term::typ::{RTyp, Typ};
 
-pub struct ADTDependencyGraph {
-    graph: DiGraph<String, ()>,
-    name_to_idx_map: HashMap<String, NodeIndex>,
-    idx_to_name_map: HashMap<NodeIndex, String>,
+pub struct ADTDependencyGraph<'depgraph> {
+    dependencies: BTreeMap<&'depgraph RTyp, BTreeSet<&'depgraph RTyp>>,
+    all_adts: BTreeSet<&'depgraph Typ>,
+    // An ADT is said statically simplifiable when it is not recursive and the
+    // only dependencies are:
+    // - None or
+    // - A SMT primitive type (Int) or
+    // - Another statically simplifiable ADT
+    pub statically_simplifiable: Vec<&'depgraph RTyp>,
+    // An ADT is said dynamically simplifiable when there is no loop (any loop size)
+    // into itself and it is not statically simplifiable
+    pub dynamically_simplifiable: Vec<&'depgraph RTyp>,
 }
 
-impl ADTDependencyGraph {
-    pub fn new() -> Res<Self> {
-        let adts = dtyp::get_all();
+impl<'depgraph> ADTDependencyGraph<'depgraph> {
+    pub fn new(adts: &'depgraph BTreeMap<Typ, Encoder>) -> Res<Self> {
         let mut dep_graph = Self {
-            graph: DiGraph::<String, ()>::new(),
-            name_to_idx_map: HashMap::<String, NodeIndex>::new(),
-            idx_to_name_map: HashMap::<NodeIndex, String>::new(),
+            dependencies: BTreeMap::new(),
+            all_adts: adts.keys().collect(),
+            statically_simplifiable: Vec::new(),
+            dynamically_simplifiable: Vec::new(),
         };
-        if adts.is_empty() {
-            return Ok(dep_graph);
-        }
-        for (adt_name, adt_typ) in adts.iter() {
-            log_debug!("Detected adt {adt_name}");
-            dep_graph.safe_add_node(adt_name);
-            for (_, constr_args) in adt_typ.news.iter() {
-                for (_, arg_partial_typ) in constr_args.iter() {
-                    dep_graph.add_arguments(adt_name, arg_partial_typ)?;
-                }
+        for (adt_rtyp, _) in adts.iter() {
+            if adt_rtyp.dtyp_inspect().is_some() {
+                dep_graph
+                    .dependencies
+                    .insert(adt_rtyp.get(), adt_rtyp.dtyp_dependencies(&dep_graph.all_adts)?);
             }
         }
+
+        dep_graph.init_statically_simplifiable();
+        dep_graph.init_dynamically_simplifiable();
+
         Ok(dep_graph)
     }
 
-    pub fn get_simplifiable_adt(&mut self) -> Res<BTreeSet<String>> {
-        let mut any_change = true;
-        let mut simplifiable_adt = BTreeSet::new();
-        // If any_change is false then we reached a fix-point,we do not need
-        // to proceed any further
-        while any_change {
-            any_change = false;
-            for node_idx in self.graph.node_indices() {
-                let node_name = self.idx_to_name_map.get(&node_idx).unwrap();
-                if !simplifiable_adt.contains(node_name)
-                    && self.can_be_simplified(node_idx, |neg_node_idx| {
-                        simplifiable_adt.contains(self.idx_to_name_map.get(&neg_node_idx).unwrap())
-                    })
-                {
-                    simplifiable_adt
-                        .insert(self.idx_to_name_map.get(&node_idx).unwrap().to_string());
-                    any_change = true;
+    fn init_statically_simplifiable(&mut self) {
+        let mut simplifiable: BTreeSet<&'depgraph RTyp> = BTreeSet::new();
+        let mut changed = true;
+
+        while changed {
+            changed = false;
+            for (&typ, deps) in &self.dependencies {
+                if !simplifiable.contains(typ) {
+                    let all_deps_resolved = deps
+                        .iter()
+                        .all(|dep| matches!(dep, RTyp::Int) || simplifiable.contains(dep));
+                    if all_deps_resolved {
+                        simplifiable.insert(typ);
+                        self.statically_simplifiable.push(typ);
+                        changed = true;
+                    }
                 }
             }
         }
-        Ok(simplifiable_adt)
     }
 
-    fn can_be_simplified<F>(&self, node_idx: NodeIndex, pred: F) -> bool
-    where
-        F: Fn(NodeIndex) -> bool,
-    {
-        self.graph.edges(node_idx).count() == 0 || self.graph.neighbors(node_idx).all(pred)
-    }
-
-    fn add_arguments(&mut self, starting_typ: &str, arg: &PartialTyp) -> Res<()> {
-        match arg {
-            PartialTyp::DTyp(dep_name, _, partial_params) => {
-                // constructorArgument: anotherADT
-                self.safe_add_node(dep_name);
-                self.safe_add_edge(starting_typ, dep_name)?;
-                // Recursive call in the args, we are only interested in the
-                // ADT case
-                for partial_typ_arg in partial_params.iter() {
-                    if matches!(partial_typ_arg, PartialTyp::DTyp(_, _, _)) {
-                        let arg_name = partial_typ_arg.get_adt_name().unwrap();
-                        let arg_params = partial_typ_arg.get_adt_args().unwrap();
-                        for arg_param in arg_params.iter() {
-                            self.add_arguments(&arg_name, arg_param)?;
+    pub fn init_dynamically_simplifiable(&mut self) {
+        let is_self_recursive = |start: &'depgraph RTyp| -> bool {
+            let mut visited = BTreeSet::new();
+            let mut stack = vec![start];
+            while let Some(typ) = stack.pop() {
+                for dep_set in self.dependencies.get(typ).iter() {
+                    for dep in dep_set.iter() {
+                        if visited.insert(*dep) {
+                            stack.push(dep);
+                        }
+                        if *dep == start {
+                            log!("{dep} == {start}");
+                            return true;
                         }
                     }
                 }
             }
-            PartialTyp::Typ(concrete_typ) => {
-                // constructorArgument: Int
-                // Since an ADT is defined over ADTs or integer the only
-                // primitive type supported is Int.
-                // For the sake of simplicity it is better to avoid adding the
-                // Int node.
-                match concrete_typ.get() {
-                    RTyp::Int => {}
-                    _ => {
-                        return Err(Error::from_kind(ErrorKind::Msg(format!(
-                            "I should only have ADT and Int in argument, found {concrete_typ}"
-                        ))))
-                    }
+            false
+        };
+
+        let eligible: BTreeSet<_> = self
+            .dependencies
+            .keys()
+            .filter(|t| !(is_self_recursive(t) || self.statically_simplifiable.contains(t)))
+            .collect();
+
+        let mut done = BTreeSet::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for typ in eligible.iter() {
+                if !done.contains(typ)
+                    && self.dependencies[*typ]
+                        .iter()
+                        .all(|dep| eligible.contains(dep) || !done.contains(&dep))
+                {
+                    done.insert(typ);
+                    self.dynamically_simplifiable.push(typ);
+                    changed = true;
                 }
             }
-            PartialTyp::Param(_) => {
-                // constructorArgument: T
-                // Here we should do nothing, we are analysing a generic
-                // hopefully we will eventually see a concrete instance of this
-                // argument
-            }
-            _ => {
-                return Err(Error::from_kind(ErrorKind::Msg(format!(
-                    "I cannot have any other thing that DTyp or partial types, found {arg}"
-                ))))
-            }
         }
-        Ok(())
     }
 
-    fn safe_add_node(&mut self, new_node: &str) {
-        if self.name_to_idx_map.contains_key(new_node) {
-            return;
+    /// Returns the approximation degree required by the corresponding element in
+    /// `self.statically_simplifiable`
+    pub fn get_appoximation_degrees(&self,) -> Vec<usize> {
+        let mut approximations = Vec::new();
+        for typ in self.statically_simplifiable.iter() {
+            let (adt_rdtyp, _) = typ.dtyp_inspect().unwrap();
+            let n_news = (adt_rdtyp.news.len() as f64).log2().ceil() as usize;
+            approximations.push(n_news + typ.get_approximation_degree(&self.all_adts));
         }
-        let idx = self.graph.add_node(new_node.to_string());
-        self.idx_to_name_map.insert(idx, new_node.to_string());
-        self.name_to_idx_map.insert(new_node.to_string(), idx);
-    }
-
-    fn safe_add_edge(&mut self, start_node: &str, end_node: &str) -> Res<()> {
-        if !self.name_to_idx_map.contains_key(start_node) {
-            return Err(Error::from_kind(ErrorKind::Msg(format!(
-                "Type {start_node} not present"
-            ))));
-        }
-        if !self.name_to_idx_map.contains_key(end_node) {
-            return Err(Error::from_kind(ErrorKind::Msg(format!(
-                "Type {end_node} not present"
-            ))));
-        }
-        let start_idx = self.name_to_idx_map.get(start_node).unwrap();
-        let end_idx = self.name_to_idx_map.get(end_node).unwrap();
-        if self.graph.find_edge(*start_idx, *end_idx).is_some() {
-            return Ok(());
-        }
-        self.graph.add_edge(*start_idx, *end_idx, ());
-        Ok(())
+        approximations
     }
 }
 
-impl std::fmt::Display for ADTDependencyGraph {
+impl<'a> std::fmt::Display for ADTDependencyGraph<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?}",
-            Dot::with_config(&self.graph, &[petgraph::dot::Config::EdgeNoLabel])
-        )
+        write!(f, "digraph G {{\n",)?;
+        for (node, neighbors) in self.dependencies.iter() {
+            let color = if self.statically_simplifiable.contains(node) {
+                " [color=red]"
+            } else if self.dynamically_simplifiable.contains(node) {
+                " [color=blue]"
+            } else {
+                ""
+            };
+            write!(f, "    \"{}\" {};\n", node, color)?;
+            for neighbor in neighbors {
+                write!(f, "    \"{}\" -> \"{}\";\n", node, neighbor)?;
+            }
+        }
+        write!(f, "}}",)
     }
 }
