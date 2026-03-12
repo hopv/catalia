@@ -2,7 +2,10 @@
 
 use hashconsing::{HConsed, HashConsign};
 
-use crate::{common::*, dtyp::{PartialTyp, RDTyp, TPrmMap}};
+use crate::{
+    common::*,
+    dtyp::{PartialTyp, RDTyp, TPrmMap},
+};
 
 hashconsing::consign! {
   /// Type factory.
@@ -168,23 +171,27 @@ impl RTyp {
         }
     }
 
-    pub fn dtyp_dependencies<'a>(&'a self, system_adts: &BTreeSet<&'a Typ>) -> Res<BTreeSet<&'a RTyp>> {
+    pub fn dtyp_dependencies<'a>(
+        &'a self,
+        system_adts: &BTreeSet<&'a Typ>,
+    ) -> Res<BTreeSet<&'a RTyp>> {
         let mut dependencies = BTreeSet::new();
         if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
             for (_, args) in dtyp.news.iter() {
                 for (_, arg_ptyp) in args.iter() {
                     match arg_ptyp {
                         PartialTyp::Typ(rtyp) => match rtyp.get() {
-                            RTyp::Int | RTyp::DTyp { dtyp: _, prms: _ } => {
+                            RTyp::DTyp { dtyp: _, prms: _ } => {
                                 dependencies.insert(rtyp.get());
                             }
+                            RTyp::Int => {}
                             _ => {
                                 return Err(Error::from_kind(ErrorKind::Msg(format!(
                                     "I was expecting an ADT or an Int, found {rtyp}"
                                 ))));
                             }
-                        }
-                        PartialTyp::DTyp(_,_,_) => {
+                        },
+                        PartialTyp::DTyp(_, _, _) => {
                             if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
                                 if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
                                     dependencies.insert(dep_typ);
@@ -202,9 +209,10 @@ impl RTyp {
             }
             for generic_rtyp in generic_rtyps.iter() {
                 match generic_rtyp.get() {
-                    RTyp::Int | RTyp::DTyp { dtyp: _, prms: _ } => {
+                    RTyp::DTyp { dtyp: _, prms: _ } => {
                         dependencies.insert(generic_rtyp.get());
                     }
+                    RTyp::Int => {}
                     _ => {
                         return Err(Error::from_kind(ErrorKind::Msg(format!(
                             "I was expecting either an ADT or an Int, found {generic_rtyp}"
@@ -214,6 +222,46 @@ impl RTyp {
             }
         }
         Ok(dependencies)
+    }
+
+    pub fn get_approximation_degree(&self, system_adts: &BTreeSet<&Typ>) -> usize {
+        if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            dtyp.news
+                .iter()
+                .map(|(_, args)| {
+                    args.iter()
+                        .map(|(_, arg_ptyp)| match arg_ptyp {
+                            PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
+                                typ::RTyp::Int => 1,
+                                typ::RTyp::DTyp { dtyp, prms: _ } => {
+                                    arg_rtyp.get_approximation_degree(system_adts)
+                                }
+                                _ => {
+                                    panic!("bbb");
+                                }
+                            },
+                            PartialTyp::DTyp(_, _, _) => {
+                                if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
+                                    if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
+                                        dep_typ.get_approximation_degree(system_adts)
+                                    }
+                                    else {
+                                        0
+                                    }
+                                }
+                                else {0}
+                            }
+                            _ => {
+                                0 //panic!("I encountered this data {arg_ptyp}");
+                            }
+                        })
+                        .count()
+                })
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        }
     }
 
     /// Checks a type is legal.
