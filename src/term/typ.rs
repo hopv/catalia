@@ -2,7 +2,7 @@
 
 use hashconsing::{HConsed, HashConsign};
 
-use crate::{common::*, dtyp::TPrmMap};
+use crate::{common::*, dtyp::{PartialTyp, RDTyp, TPrmMap}};
 
 hashconsing::consign! {
   /// Type factory.
@@ -166,6 +166,54 @@ impl RTyp {
         } else {
             None
         }
+    }
+
+    pub fn dtyp_dependencies<'a>(&'a self, system_adts: &BTreeSet<&'a Typ>) -> Res<BTreeSet<&'a RTyp>> {
+        let mut dependencies = BTreeSet::new();
+        if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            for (_, args) in dtyp.news.iter() {
+                for (_, arg_ptyp) in args.iter() {
+                    match arg_ptyp {
+                        PartialTyp::Typ(rtyp) => match rtyp.get() {
+                            RTyp::Int | RTyp::DTyp { dtyp: _, prms: _ } => {
+                                dependencies.insert(rtyp.get());
+                            }
+                            _ => {
+                                return Err(Error::from_kind(ErrorKind::Msg(format!(
+                                    "I was expecting an ADT or an Int, found {rtyp}"
+                                ))));
+                            }
+                        }
+                        PartialTyp::DTyp(_,_,_) => {
+                            if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
+                                if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
+                                    dependencies.insert(dep_typ);
+                                }
+                            }
+                        }
+                        PartialTyp::Param(_) => {}
+                        _ => {
+                            return Err(Error::from_kind(ErrorKind::Msg(format!(
+                                "I was expecting a concrete type or a generic, found {arg_ptyp} in {dtyp}"
+                            ))));
+                        }
+                    }
+                }
+            }
+            for generic_rtyp in generic_rtyps.iter() {
+                match generic_rtyp.get() {
+                    RTyp::Int | RTyp::DTyp { dtyp: _, prms: _ } => {
+                        dependencies.insert(generic_rtyp.get());
+                    }
+                    _ => {
+                        return Err(Error::from_kind(ErrorKind::Msg(format!(
+                            "I was expecting either an ADT or an Int, found {generic_rtyp}"
+                        ))));
+                    }
+                }
+            }
+        }
+        Ok(dependencies)
     }
 
     /// Checks a type is legal.
