@@ -37,6 +37,7 @@
 //! ## Some Assumptions
 //! - set of ADT does not change from start to end during `work`
 //!   - they are defined as the global hashconsed objects
+use adt_graph::ADTDependencyGraph;
 use chc::AbsInstance;
 use enc::Encoder;
 
@@ -66,6 +67,7 @@ pub struct AbsConf<'original> {
     pub encs: BTreeMap<Typ, Encoder>,
     epoch: usize,
     profiler: &'original Profiler,
+    dependency_graph: adt_graph::ADTDependencyGraph,
 }
 
 fn initialize_dtyp(typ: Typ, encs: &mut BTreeMap<Typ, Encoder>) -> Res<()> {
@@ -122,7 +124,7 @@ impl<'original> AbsConf<'original> {
         let cexs = Vec::new();
         let solver = conf.solver.spawn("absadt", Parser, original)?;
         let encs = BTreeMap::new();
-
+        let dependency_graph = adt_graph::ADTDependencyGraph::default();
         Ok(AbsConf {
             instance,
             cexs,
@@ -130,7 +132,85 @@ impl<'original> AbsConf<'original> {
             encs,
             epoch: 0,
             profiler,
+            dependency_graph,
         })
+    }
+
+    fn flatten_non_recursive_adt(&mut self) -> Res<()> {
+        fn expand_signature(
+            old_signature: &VarMap<VarInfo>,
+            simpl: &BTreeMap<Typ, usize>,
+        ) -> VarMap<VarInfo> {
+            let mut new_signature = VarMap::<VarInfo>::new();
+            for old_arg in old_signature.iter() {
+                let arg_approx_degree = simpl.get(&old_arg.typ).unwrap_or(&1);
+                for degree in 0..*arg_approx_degree {
+                    new_signature.push(VarInfo {
+                        name: format!("{}_{}", old_arg.name.clone(), degree,),
+                        typ: typ::int(),
+                        idx: new_signature.next_index(),
+                        active: true,
+                    });
+                }
+            }
+            new_signature
+        }
+
+        // Expands all the signatures and approximations for statically simplifibale ADTs
+        let statically_simplifiable = self.dependency_graph.get_statically_simplifiable();
+        for (typ, approx_deg) in statically_simplifiable.iter() {
+            let enc = self.encs.get_mut(&typ).unwrap();
+            enc.n_params = *approx_deg;
+            let approximations = &mut enc.approxs;
+            for (idx, (_, approx)) in approximations.iter_mut().enumerate() {
+                approx.args = expand_signature(&approx.args, &statically_simplifiable);
+                //Discriminate the constructor
+                approx.terms = vec![term::int(idx)];
+
+                for arg in approx.args.iter() {
+                    approx.terms.push(term::int_var(arg.idx));
+                }
+                // Final padding
+                for _ in approx.terms.len()..enc.n_params {
+                    approx.terms.push(term::int_zero());
+                }
+            }
+        }
+
+        // Expands all the signatures for ADTs that depends on static approx ADTs
+        for typ in self
+            .dependency_graph
+            .get_dependant_on_statically_simplifiable()
+        {
+
+            let (rdtyp, parameter) = typ.dtyp_inspect().unwrap();
+            let enc = &mut self.encs.get_mut(&typ).unwrap();
+            for (constructor_name, constructor_args) in rdtyp.news.iter() {
+                let mut new_signature = VarMap::<VarInfo>::new();
+                for (arg_name, arg_typ) in constructor_args.iter() {
+                    if let Ok(argument_concrete_typ) = arg_typ.to_type(Some(parameter)) {
+                        for idx in 0..*statically_simplifiable.get(&argument_concrete_typ).unwrap_or(&1) {
+                            new_signature.push(VarInfo {
+                                name: format!("{arg_name}_{idx}",),
+                                typ: typ::int(),
+                                idx: new_signature.next_index(),
+                                active: true,
+                            });
+                        }
+                    }
+                    else{
+                        new_signature.push(VarInfo {
+                            name: format!("{arg_name}",),
+                            typ: typ::int(),
+                            idx: new_signature.next_index(),
+                            active: true,
+                        });
+                    }
+                }
+                enc.approxs.get_mut(constructor_name).unwrap().args = new_signature;
+            }
+        }
+        Ok(())
     }
 
     fn initialize_encs(&mut self) -> Res<()> {
@@ -148,6 +228,7 @@ impl<'original> AbsConf<'original> {
             }
             initialize_encs_for_term(&c.lhs_term, &mut self.encs)?;
         }
+        self.dependency_graph = ADTDependencyGraph::new(&self.encs)?;
         Ok(())
     }
 
@@ -251,6 +332,7 @@ impl<'original> AbsConf<'original> {
     fn run(&mut self, approximation_file: Option<&str>) -> Res<either::Either<(), ()>> {
         //self.playground()?;
         self.initialize_encs()?;
+        //self.initialize_dependncy_analysis()?;
         let mut file = self.instance.instance_log_files("preprocessed")?;
         self.instance.dump_as_smt2(&mut file, "", false)?;
 
@@ -265,8 +347,8 @@ impl<'original> AbsConf<'original> {
 
         // The approximation map
         if let Some(catamorphism_str) = approximation_file {
-            let parsed_approximations =  catamorphism_parser::parse_catamorphism(catamorphism_str)?;
-			log_info!("Testing the input approximations");
+            let parsed_approximations = catamorphism_parser::parse_catamorphism(catamorphism_str)?;
+            log_info!("Testing the input approximations");
             self.encs =
                 catamorphism_parser::build_encoding_from_approx(parsed_approximations, &self.encs)?;
             let encoded = self.encode();
@@ -283,6 +365,8 @@ impl<'original> AbsConf<'original> {
                 }
             }
         }
+
+        self.flatten_non_recursive_adt()?;
 
         let r = loop {
             self.epoch += 1;
@@ -309,10 +393,7 @@ impl<'original> AbsConf<'original> {
 }
 
 impl<'a> AbsConf<'a> {
-    pub fn encode_clause(
-        &self,
-        c: &chc::AbsClause
-    ) -> chc::AbsClause {
+    pub fn encode_clause(&self, c: &chc::AbsClause) -> chc::AbsClause {
         let ctx = enc::EncodeCtx::new(&self.encs);
         let (new_vars, introduced) = enc::tr_varinfos(&self.encs, &c.vars);
         let encode_var = |_, var| {
@@ -403,14 +484,17 @@ impl<'a> AbsConf<'a> {
         let head_argument = term::dtyp_new(
             typ.clone(),
             constr_name,
-            vars
-                .iter()
+            vars.iter()
                 .map(|v| term::var(v.idx, v.typ.clone()))
                 .collect(),
         );
 
         // 3. generate constraints for each dtyp argument
         for var in vars.iter() {
+            log!(
+                "I am trying to find the approximation for {var}: {} ",
+                var.typ
+            );
             match enc_map.get(&var.typ) {
                 Some(p) => {
                     let args: VarMap<_> = vec![term::var(var.idx, var.typ.clone())].into();
@@ -419,7 +503,7 @@ impl<'a> AbsConf<'a> {
                         args: args.into(),
                     };
                     lhs_preds.push(app);
-                },
+                }
                 None => {
                     assert!(!var.typ.is_dtyp());
                 }
@@ -460,10 +544,7 @@ impl<'a> AbsConf<'a> {
         for (typ, _) in self.encs.iter() {
             let pi = preds.next_index();
             let p = Pred::new(
-                format!(
-                    "encoder_pred_{}",
-                    enc::to_valid_symbol(typ.to_string()),
-                ),
+                format!("encoder_pred_{}", enc::to_valid_symbol(typ.to_string()),),
                 pi,
                 vec![typ.clone()].into(),
             );
@@ -481,6 +562,7 @@ impl<'a> AbsConf<'a> {
                 let types = sels.iter().map(|(_, ty)| ty.to_type(Some(prms)).unwrap());
                 let clause =
                     self.generate_approx_constraint(pidx, typ, constructor_name, &enc_map, types);
+                log!("Predicate for {constructor_name}: {dt} {clause}");
                 clauses.push(clause);
             }
         }
@@ -505,7 +587,7 @@ impl<'a> AbsConf<'a> {
                 let app = chc::PredApp {
                     pred: *approx_pred,
                     args: args.into(),
-                    };
+                };
                 lhs_preds.push(app);
             }
             res.push(chc::AbsClause {
@@ -526,14 +608,9 @@ impl<'a> AbsConf<'a> {
         clauses.extend(clauses2);
 
         // 2. encode the clauses by using the current catamorphism
-        let preds = preds
-            .iter()
-            .map(|p| self.encode_pred(p))
-            .collect();
+        let preds = preds.iter().map(|p| self.encode_pred(p)).collect();
 
-        let clauses: Vec<_> = clauses.iter()
-            .map(|c| self.encode_clause(c))
-            .collect();
+        let clauses: Vec<_> = clauses.iter().map(|c| self.encode_clause(c)).collect();
 
         self.instance.clone_with_clauses(clauses, preds)
     }
