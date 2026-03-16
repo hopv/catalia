@@ -4,75 +4,79 @@ use crate::absadt::enc::Encoder;
 use crate::errors::Res;
 use crate::term::typ::{RTyp, Typ};
 
-pub struct ADTDependencyGraph<'depgraph> {
-    dependencies: BTreeMap<&'depgraph RTyp, BTreeSet<&'depgraph RTyp>>,
-    all_adts: BTreeSet<&'depgraph Typ>,
+#[derive(Default)]
+pub struct ADTDependencyGraph {
+    dependencies: BTreeMap<Typ, BTreeSet<Typ>>,
     // An ADT is said statically simplifiable when it is not recursive and the
     // only dependencies are:
     // - None or
     // - A SMT primitive type (Int) or
     // - Another statically simplifiable ADT
-    pub statically_simplifiable: Vec<&'depgraph RTyp>,
+    statically_simplifiable: BTreeSet<Typ>,
     // An ADT is said dynamically simplifiable when there is no loop (any loop size)
     // into itself and it is not statically simplifiable
-    pub dynamically_simplifiable: Vec<&'depgraph RTyp>,
+    dynamically_simplifiable: BTreeSet<Typ>,
 }
 
-impl<'depgraph> ADTDependencyGraph<'depgraph> {
-    pub fn new(adts: &'depgraph BTreeMap<Typ, Encoder>) -> Res<Self> {
-        let mut dep_graph = Self {
-            dependencies: BTreeMap::new(),
-            all_adts: adts.keys().collect(),
-            statically_simplifiable: Vec::new(),
-            dynamically_simplifiable: Vec::new(),
-        };
-        for (adt_rtyp, _) in adts.iter() {
+impl ADTDependencyGraph {
+    pub fn new(adts: &BTreeMap<Typ, Encoder>) -> Res<Self> {
+        let all_adts: BTreeSet<Typ> = adts.keys().map(|item| item.clone()).collect();
+        let mut dependencies = BTreeMap::new();
+
+        for adt_rtyp in all_adts.iter() {
             if adt_rtyp.dtyp_inspect().is_some() {
-                dep_graph
-                    .dependencies
-                    .insert(adt_rtyp.get(), adt_rtyp.dtyp_dependencies(&dep_graph.all_adts)?);
+                dependencies.insert(adt_rtyp.clone(), adt_rtyp.dtyp_dependencies(&all_adts)?);
             }
         }
 
-        dep_graph.init_statically_simplifiable();
-        dep_graph.init_dynamically_simplifiable();
+        let statically_simplifiable = Self::init_statically_simplifiable(&dependencies);
+        let dynamically_simplifiable =
+            Self::init_dynamically_simplifiable(&dependencies, &statically_simplifiable);
 
-        Ok(dep_graph)
+        Ok(Self {
+            dependencies,
+            statically_simplifiable,
+            dynamically_simplifiable,
+        })
     }
 
-    fn init_statically_simplifiable(&mut self) {
-        let mut simplifiable: BTreeSet<&'depgraph RTyp> = BTreeSet::new();
+    fn init_statically_simplifiable(dependencies: &BTreeMap<Typ, BTreeSet<Typ>>) -> BTreeSet<Typ> {
+        //let mut simplifiable: BTreeSet<&Typ> = BTreeSet::new();
+        let mut return_vec = BTreeSet::new();
         let mut changed = true;
 
         while changed {
             changed = false;
-            for (&typ, deps) in &self.dependencies {
-                if !simplifiable.contains(typ) {
-                    let all_deps_resolved = deps
+            for (typ, deps) in dependencies.iter() {
+                if !return_vec.contains(typ) {
+                    if deps
                         .iter()
-                        .all(|dep| matches!(dep, RTyp::Int) || simplifiable.contains(dep));
-                    if all_deps_resolved {
-                        simplifiable.insert(typ);
-                        self.statically_simplifiable.push(typ);
+                        .all(|dep| matches!(dep.get(), RTyp::Int) || return_vec.contains(dep))
+                    {
+                        //simplifiable.insert(&typ);
+                        return_vec.insert(typ.clone());
                         changed = true;
                     }
                 }
             }
         }
+        return_vec
     }
 
-    pub fn init_dynamically_simplifiable(&mut self) {
-        let is_self_recursive = |start: &'depgraph RTyp| -> bool {
+    fn init_dynamically_simplifiable(
+        dependencies: &BTreeMap<Typ, BTreeSet<Typ>>,
+        statically_simplifiable: &BTreeSet<Typ>,
+    ) -> BTreeSet<Typ> {
+        let is_self_recursive = |start: &Typ| -> bool {
             let mut visited = BTreeSet::new();
             let mut stack = vec![start];
             while let Some(typ) = stack.pop() {
-                for dep_set in self.dependencies.get(typ).iter() {
+                for dep_set in dependencies.get(typ).iter() {
                     for dep in dep_set.iter() {
-                        if visited.insert(*dep) {
+                        if visited.insert(dep) {
                             stack.push(dep);
                         }
-                        if *dep == start {
-                            log!("{dep} == {start}");
+                        if dep == start {
                             return true;
                         }
                     }
@@ -81,50 +85,61 @@ impl<'depgraph> ADTDependencyGraph<'depgraph> {
             false
         };
 
-        let eligible: BTreeSet<_> = self
-            .dependencies
+        let eligible: BTreeSet<_> = dependencies
             .keys()
-            .filter(|t| !(is_self_recursive(t) || self.statically_simplifiable.contains(t)))
+            .filter(|t| !(is_self_recursive(t) || statically_simplifiable.contains(t)))
             .collect();
 
         let mut done = BTreeSet::new();
         let mut changed = true;
+        //let mut dynamically_simplifiable = Vec::new();
         while changed {
             changed = false;
             for typ in eligible.iter() {
-                if !done.contains(typ)
-                    && self.dependencies[*typ]
+                if !done.contains(*typ) && dependencies[typ]
                         .iter()
-                        .all(|dep| eligible.contains(dep) || !done.contains(&dep))
+                        .any(|dep| !eligible.contains(dep) || !done.contains(dep))
                 {
-                    done.insert(typ);
-                    self.dynamically_simplifiable.push(typ);
+                    done.insert((*typ).clone());
                     changed = true;
                 }
             }
         }
+        done
     }
 
-    /// Returns the approximation degree required by the corresponding element in
-    /// `self.statically_simplifiable`
-    pub fn get_appoximation_degrees(&self,) -> Vec<usize> {
-        let mut approximations = Vec::new();
-        for typ in self.statically_simplifiable.iter() {
-            let (adt_rdtyp, _) = typ.dtyp_inspect().unwrap();
-            let n_news = (adt_rdtyp.news.len() as f64).log2().ceil() as usize;
-            approximations.push(n_news + typ.get_approximation_degree(&self.all_adts));
-        }
-        approximations
+    pub fn get_statically_simplifiable(&self) -> BTreeMap<Typ, usize> {
+        self.statically_simplifiable
+            .iter()
+            .map(|typ| {
+                (
+                    typ.clone(),
+                    typ.get_approximation_degree(&self.dependencies.keys().collect()),
+                )
+            })
+            .collect()
+    }
+
+    pub fn get_dependant_on_statically_simplifiable(&self) -> BTreeSet<Typ> {
+        self.dependencies
+            .iter()
+            .filter(|(key, deps)| {
+                !self.statically_simplifiable.contains(key) &&
+                deps.iter()
+                    .any(|typ| self.statically_simplifiable.contains(typ))
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 }
 
-impl<'a> std::fmt::Display for ADTDependencyGraph<'a> {
+impl std::fmt::Display for ADTDependencyGraph {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "digraph G {{\n",)?;
         for (node, neighbors) in self.dependencies.iter() {
-            let color = if self.statically_simplifiable.contains(node) {
+            let color = if self.statically_simplifiable.contains(&node) {
                 " [color=red]"
-            } else if self.dynamically_simplifiable.contains(node) {
+            } else if self.dynamically_simplifiable.contains(&node) {
                 " [color=blue]"
             } else {
                 ""

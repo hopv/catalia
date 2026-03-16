@@ -173,8 +173,8 @@ impl RTyp {
 
     pub fn dtyp_dependencies<'a>(
         &'a self,
-        system_adts: &BTreeSet<&'a Typ>,
-    ) -> Res<BTreeSet<&'a RTyp>> {
+        system_adts: &BTreeSet<Typ>,
+    ) -> Res<BTreeSet<Typ>> {
         let mut dependencies = BTreeSet::new();
         if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
             for (_, args) in dtyp.news.iter() {
@@ -182,7 +182,7 @@ impl RTyp {
                     match arg_ptyp {
                         PartialTyp::Typ(rtyp) => match rtyp.get() {
                             RTyp::DTyp { dtyp: _, prms: _ } => {
-                                dependencies.insert(rtyp.get());
+                                dependencies.insert(rtyp.clone());
                             }
                             RTyp::Int => {}
                             _ => {
@@ -194,7 +194,7 @@ impl RTyp {
                         PartialTyp::DTyp(_, _, _) => {
                             if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
                                 if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
-                                    dependencies.insert(dep_typ);
+                                    dependencies.insert(dep_typ.clone());
                                 }
                             }
                         }
@@ -210,7 +210,7 @@ impl RTyp {
             for generic_rtyp in generic_rtyps.iter() {
                 match generic_rtyp.get() {
                     RTyp::DTyp { dtyp: _, prms: _ } => {
-                        dependencies.insert(generic_rtyp.get());
+                        dependencies.insert(generic_rtyp.clone());
                     }
                     RTyp::Int => {}
                     _ => {
@@ -233,32 +233,27 @@ impl RTyp {
                         .map(|(_, arg_ptyp)| match arg_ptyp {
                             PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
                                 typ::RTyp::Int => 1,
-                                typ::RTyp::DTyp { dtyp, prms: _ } => {
+                                typ::RTyp::DTyp { dtyp: _, prms: _ } => {
                                     arg_rtyp.get_approximation_degree(system_adts)
                                 }
-                                _ => {
-                                    panic!("bbb");
-                                }
+                                _ => 0
                             },
                             PartialTyp::DTyp(_, _, _) => {
                                 if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
                                     if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
                                         dep_typ.get_approximation_degree(system_adts)
                                     }
-                                    else {
-                                        0
-                                    }
+                                    else {0}
                                 }
                                 else {0}
                             }
-                            _ => {
-                                0 //panic!("I encountered this data {arg_ptyp}");
-                            }
+                            _ => 0
                         })
-                        .count()
+                        .sum()
                 })
                 .max()
-                .unwrap_or(0)
+                // + 1 beacuse we need one digit to discriminate the constructors
+                .unwrap_or(0) + 1
         } else {
             0
         }
