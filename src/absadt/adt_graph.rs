@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::absadt::enc::Encoder;
+use crate::term;
+use crate::typ;
+use crate::VarMap;
+use crate::absadt::enc::{Enc, Approx, Encoder};
 use crate::errors::Res;
+use crate::info::VarInfo;
 use crate::term::typ::{RTyp, Typ};
 
 #[derive(Default)]
@@ -108,7 +112,64 @@ impl ADTDependencyGraph {
         done
     }
 
-    pub fn get_statically_simplifiable(&self) -> BTreeMap<Typ, usize> {
+    pub fn flatten_static_adt(&self, encs: &mut BTreeMap<Typ, Enc<Approx>>) -> Res<()> {
+        let statically_simplifiable = self.get_statically_simplifiable();
+        
+        // Expand all the signatures and approximations for statically simplifibale ADTs
+        for (typ, approx_deg) in statically_simplifiable.iter() {
+            let enc = encs.get_mut(&typ).unwrap();
+            enc.n_params = *approx_deg;
+            enc.statically_simplified = true;
+            let approximations = &mut enc.approxs;
+            for (idx, (_, approx)) in approximations.iter_mut().enumerate() {
+                approx.expand_signature(&statically_simplifiable);
+                //Discriminate the constructor
+                approx.terms = vec![term::int(idx)];
+                for arg in approx.args.iter() {
+                    approx.terms.push(term::int_var(arg.idx));
+                }
+                // Final padding
+                for _ in approx.terms.len()..enc.n_params {
+                    approx.terms.push(term::int_zero());
+                }
+            }
+        }
+
+        // Expand all the signatures for ADTs that depends on static approx ADTs
+        for typ in self
+            .get_dependant_on_statically_simplifiable()
+        {
+            let (rdtyp, parameter) = typ.dtyp_inspect().unwrap();
+            let enc = &mut encs.get_mut(&typ).unwrap();
+            for (constructor_name, constructor_args) in rdtyp.news.iter() {
+                let mut new_signature = VarMap::<VarInfo>::new();
+                for (arg_name, arg_typ) in constructor_args.iter() {
+                    if let Ok(argument_concrete_typ) = arg_typ.to_type(Some(parameter)) {
+                        for idx in 0..*statically_simplifiable.get(&argument_concrete_typ).unwrap_or(&1) {
+                            new_signature.push(VarInfo {
+                                name: format!("{arg_name}_{idx}",),
+                                typ: typ::int(),
+                                idx: new_signature.next_index(),
+                                active: true,
+                            });
+                        }
+                    }
+                    else{
+                        new_signature.push(VarInfo {
+                            name: format!("{arg_name}",),
+                            typ: typ::int(),
+                            idx: new_signature.next_index(),
+                            active: true,
+                        });
+                    }
+                }
+                enc.approxs.get_mut(constructor_name).unwrap().args = new_signature;
+            }
+        }
+        Ok(())
+    }
+
+    fn get_statically_simplifiable(&self) -> BTreeMap<Typ, usize> {
         self.statically_simplifiable
             .iter()
             .map(|typ| {
@@ -120,7 +181,7 @@ impl ADTDependencyGraph {
             .collect()
     }
 
-    pub fn get_dependant_on_statically_simplifiable(&self) -> BTreeSet<Typ> {
+    fn get_dependant_on_statically_simplifiable(&self) -> BTreeSet<Typ> {
         self.dependencies
             .iter()
             .filter(|(key, deps)| {

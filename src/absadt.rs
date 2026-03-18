@@ -139,60 +139,7 @@ impl<'original> AbsConf<'original> {
     }
 
     fn flatten_non_recursive_adt(&mut self) -> Res<()> {
-        let statically_simplifiable = self.dependency_graph.get_statically_simplifiable();
-
-        // Expand all the signatures and approximations for statically simplifibale ADTs
-        for (typ, approx_deg) in statically_simplifiable.iter() {
-            let enc = self.encs.get_mut(&typ).unwrap();
-            enc.n_params = *approx_deg;
-            enc.statically_simplified = true;
-            let approximations = &mut enc.approxs;
-            for (idx, (_, approx)) in approximations.iter_mut().enumerate() {
-                approx.expand_signature(&statically_simplifiable);
-                //Discriminate the constructor
-                approx.terms = vec![term::int(idx)];
-                for arg in approx.args.iter() {
-                    approx.terms.push(term::int_var(arg.idx));
-                }
-                // Final padding
-                for _ in approx.terms.len()..enc.n_params {
-                    approx.terms.push(term::int_zero());
-                }
-            }
-        }
-
-        // Expand all the signatures for ADTs that depends on static approx ADTs
-        for typ in self
-            .dependency_graph
-            .get_dependant_on_statically_simplifiable()
-        {
-            let (rdtyp, parameter) = typ.dtyp_inspect().unwrap();
-            let enc = &mut self.encs.get_mut(&typ).unwrap();
-            for (constructor_name, constructor_args) in rdtyp.news.iter() {
-                let mut new_signature = VarMap::<VarInfo>::new();
-                for (arg_name, arg_typ) in constructor_args.iter() {
-                    if let Ok(argument_concrete_typ) = arg_typ.to_type(Some(parameter)) {
-                        for idx in 0..*statically_simplifiable.get(&argument_concrete_typ).unwrap_or(&1) {
-                            new_signature.push(VarInfo {
-                                name: format!("{arg_name}_{idx}",),
-                                typ: typ::int(),
-                                idx: new_signature.next_index(),
-                                active: true,
-                            });
-                        }
-                    }
-                    else{
-                        new_signature.push(VarInfo {
-                            name: format!("{arg_name}",),
-                            typ: typ::int(),
-                            idx: new_signature.next_index(),
-                            active: true,
-                        });
-                    }
-                }
-                enc.approxs.get_mut(constructor_name).unwrap().args = new_signature;
-            }
-        }
+        self.dependency_graph.flatten_static_adt(&mut self.encs)?;
         Ok(())
     }
 
