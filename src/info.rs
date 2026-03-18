@@ -7,7 +7,7 @@ use rsmt2::print::{Sort2Smt, Sym2Smt};
 use crate::common::*;
 
 /// Variable info for clauses or function definitions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VarInfo {
     /// Variable's name.
     pub name: String,
