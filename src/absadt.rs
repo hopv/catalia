@@ -90,6 +90,8 @@ fn initialize_dtyp(typ: Typ, encs: &mut BTreeMap<Typ, Encoder>) -> Res<()> {
         typ: typ.clone(),
         n_params,
         approxs,
+        statically_simplified: false,
+        dinamically_simplified: false,
     };
     let r = encs.insert(typ, enc);
     debug_assert!(r.is_none());
@@ -159,12 +161,11 @@ impl<'original> AbsConf<'original> {
             }
         }
 
-        // Expands all the signatures for ADTs that depends on static approx ADTs
+        // Expand all the signatures for ADTs that depends on static approx ADTs
         for typ in self
             .dependency_graph
             .get_dependant_on_statically_simplifiable()
         {
-
             let (rdtyp, parameter) = typ.dtyp_inspect().unwrap();
             let enc = &mut self.encs.get_mut(&typ).unwrap();
             for (constructor_name, constructor_args) in rdtyp.news.iter() {
@@ -472,10 +473,6 @@ impl<'a> AbsConf<'a> {
 
         // 3. generate constraints for each dtyp argument
         for var in vars.iter() {
-            log!(
-                "I am trying to find the approximation for {var}: {} ",
-                var.typ
-            );
             match enc_map.get(&var.typ) {
                 Some(p) => {
                     let args: VarMap<_> = vec![term::var(var.idx, var.typ.clone())].into();
@@ -543,7 +540,6 @@ impl<'a> AbsConf<'a> {
                 let types = sels.iter().map(|(_, ty)| ty.to_type(Some(prms)).unwrap());
                 let clause =
                     self.generate_approx_constraint(pidx, typ, constructor_name, &enc_map, types);
-                log!("Predicate for {constructor_name}: {dt} {clause}");
                 clauses.push(clause);
             }
         }

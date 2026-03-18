@@ -301,6 +301,8 @@ pub fn build_encoding_from_approx(
                     approxs: new_approxs.clone(),
                     typ: typ.clone(),
                     n_params: *approximation_degree,
+                    statically_simplified: false,
+                    dinamically_simplified: false,
                 };
                 return_encs.insert(typ.clone(), enc);
             }
