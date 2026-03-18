@@ -137,36 +137,18 @@ impl<'original> AbsConf<'original> {
     }
 
     fn flatten_non_recursive_adt(&mut self) -> Res<()> {
-        fn expand_signature(
-            old_signature: &VarMap<VarInfo>,
-            simpl: &BTreeMap<Typ, usize>,
-        ) -> VarMap<VarInfo> {
-            let mut new_signature = VarMap::<VarInfo>::new();
-            for old_arg in old_signature.iter() {
-                let arg_approx_degree = simpl.get(&old_arg.typ).unwrap_or(&1);
-                for degree in 0..*arg_approx_degree {
-                    new_signature.push(VarInfo {
-                        name: format!("{}_{}", old_arg.name.clone(), degree,),
-                        typ: typ::int(),
-                        idx: new_signature.next_index(),
-                        active: true,
-                    });
-                }
-            }
-            new_signature
-        }
-
-        // Expands all the signatures and approximations for statically simplifibale ADTs
         let statically_simplifiable = self.dependency_graph.get_statically_simplifiable();
+
+        // Expand all the signatures and approximations for statically simplifibale ADTs
         for (typ, approx_deg) in statically_simplifiable.iter() {
             let enc = self.encs.get_mut(&typ).unwrap();
             enc.n_params = *approx_deg;
+            enc.statically_simplified = true;
             let approximations = &mut enc.approxs;
             for (idx, (_, approx)) in approximations.iter_mut().enumerate() {
-                approx.args = expand_signature(&approx.args, &statically_simplifiable);
+                approx.expand_signature(&statically_simplifiable);
                 //Discriminate the constructor
                 approx.terms = vec![term::int(idx)];
-
                 for arg in approx.args.iter() {
                     approx.terms.push(term::int_var(arg.idx));
                 }
@@ -332,7 +314,6 @@ impl<'original> AbsConf<'original> {
     fn run(&mut self, approximation_file: Option<&str>) -> Res<either::Either<(), ()>> {
         //self.playground()?;
         self.initialize_encs()?;
-        //self.initialize_dependncy_analysis()?;
         let mut file = self.instance.instance_log_files("preprocessed")?;
         self.instance.dump_as_smt2(&mut file, "", false)?;
 
