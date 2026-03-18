@@ -541,50 +541,7 @@ impl LinearApprox {
     }
 }
 
-struct StaticApprox {
-    /// Existing approx
-    approx: Approx,
-}
-
-impl From<&Approx> for StaticApprox {
-    fn from(approx: &Approx) -> Self {
-        Self {
-            approx: approx.clone(),
-        }
-    }
-}
-
-impl StaticApprox {
-    // create a StaticApprox for a given typ.
-    fn new(
-        new_approxs: &mut BTreeMap<String, Template>,
-        variables: &mut VarInfos,
-        old_approx: &Enc<Approx>,
-    ) {
-        for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
-            let mut approx_args = VarInfos::new();
-            for idx in 0..old_approx.approxs.get(constr_name).unwrap().args.len() {
-                let next_index = variables.next_index();
-                let info =
-                    VarInfo::new(format!("arg-{}-{idx}", constr_name), typ::int(), next_index);
-                variables.push(info.clone());
-                approx_args.push(info);
-            }
-            let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
-            let terms =
-                Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
-            new_approxs.insert(
-                constr_name.clone(),
-                Template::StaticSemplification(Self {
-                    approx: Approx {
-                        args: approx_args,
-                        terms,
-                    },
-                }),
-            );
-        }
-    }
-
+trait SimplifiedApproximation {
     fn shift_index(new_args: &VarInfos, old_args: &VarInfos, old_terms: &Vec<Term>) -> Vec<Term> {
         let mut new_terms = Vec::new();
         for term in old_terms.iter() {
@@ -612,10 +569,23 @@ impl StaticApprox {
         new_terms
     }
 
-    fn instantiate(&self) -> Approx {
-        self.approx.clone()
+    fn create_vars_info (variables: &mut VarInfos,approx_args: &mut VarInfos, old_approx: &Enc<Approx>, constr_name: &str, ) {
+        for idx in 0..old_approx.approxs.get(constr_name).unwrap().args.len() {
+            let next_index = variables.next_index();
+            let info =
+                VarInfo::new(format!("arg-{}-{idx}", constr_name), typ::int(), next_index);
+            variables.push(info.clone());
+            approx_args.push(info);
+        }
     }
 }
+
+struct StaticApprox {
+    /// Existing approx
+    approx: Approx,
+}
+
+impl SimplifiedApproximation for StaticApprox {}
 
 impl Approximation for StaticApprox {
     fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
@@ -631,6 +601,84 @@ impl Approximation for StaticApprox {
             res.push(term.subst(&subst_map).0);
         }
         res
+    }
+}
+
+impl StaticApprox {
+    fn new(
+        new_approxs: &mut BTreeMap<String, Template>,
+        variables: &mut VarInfos,
+        old_approx: &Enc<Approx>,
+    ) {
+        for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
+            let mut approx_args = VarInfos::new();
+            Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
+            let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
+            let terms =
+                Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+            new_approxs.insert(
+                constr_name.clone(),
+                Template::StaticSemplification(Self {
+                    approx: Approx {
+                        args: approx_args,
+                        terms,
+                    },
+                }),
+            );
+        }
+    }
+
+    fn instantiate(&self) -> Approx {
+        self.approx.clone()
+    }
+}
+
+struct DynamicApprox {
+    /// Existing approx
+    approx: Approx,
+}
+
+impl SimplifiedApproximation for DynamicApprox {}
+
+impl Approximation for DynamicApprox {
+    fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
+        let subst_map: VarHMap<_> = self
+            .approx
+            .args
+            .iter()
+            .map(|x| x.idx)
+            .zip(arg_terms.iter().cloned())
+            .collect();
+        let mut res = Vec::with_capacity(self.approx.terms.len());
+        for term in self.approx.terms.iter() {
+            res.push(term.subst(&subst_map).0);
+        }
+        res
+    }
+}
+
+impl DynamicApprox {
+    fn new (
+        new_approxs: &mut BTreeMap<String, Template>,
+        variables: &mut VarInfos,
+        old_approx: &Enc<Approx>,
+    ) {
+        for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
+            let mut approx_args = VarInfos::new();
+            Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
+            let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
+            let terms =
+                Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+            new_approxs.insert(
+                constr_name.clone(),
+                Template::Dynamicemplification(Self {
+                    approx: Approx {
+                        args: approx_args,
+                        terms,
+                    },
+                }),
+            );
+        }
     }
 }
 
