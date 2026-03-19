@@ -171,8 +171,8 @@ impl RTyp {
         }
     }
 
-    pub fn dtyp_dependencies<'a>(
-        &'a self,
+    pub fn dtyp_dependencies(
+        &self,
         system_adts: &BTreeSet<Typ>,
     ) -> Res<BTreeSet<Typ>> {
         let mut dependencies = BTreeSet::new();
@@ -224,40 +224,81 @@ impl RTyp {
         Ok(dependencies)
     }
 
-    pub fn get_approximation_degree(&self, system_adts: &BTreeSet<&Typ>) -> usize {
-        if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
-            dtyp.news
-                .iter()
-                .map(|(_, args)| {
-                    args.iter()
-                        .map(|(_, arg_ptyp)| match arg_ptyp {
-                            PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
-                                typ::RTyp::Int => 1,
-                                typ::RTyp::DTyp { dtyp: _, prms: _ } => {
-                                    arg_rtyp.get_approximation_degree(system_adts)
-                                }
-                                _ => 0
-                            },
-                            PartialTyp::DTyp(_, _, _) => {
-                                if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
-                                    if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
-                                        dep_typ.get_approximation_degree(system_adts)
-                                    }
-                                    else {0}
-                                }
-                                else {0}
-                            }
-                            _ => 0
-                        })
-                        .sum()
-                })
-                .max()
-                // + 1 beacuse we need one digit to discriminate the constructors
-                .unwrap_or(0) + 1
-        } else {
-            0
+    pub fn is_recursive(&self, system_adts: &BTreeSet<Typ>,) -> Res<bool> {
+        let mut stack = vec![self.clone()];
+        let mut already_visted = BTreeSet::new();
+        while let Some(typ) = stack.pop() {
+            already_visted.insert(typ.clone());
+            for dep in typ.dtyp_dependencies(system_adts)?.iter() {
+                if dep.get() == self {
+                    return Ok(true);
+                }
+                if !already_visted.contains(dep.get()) {
+                    stack.push(dep.get().clone());
+                }
+            }
         }
+        return Ok(false);
     }
+
+    /// Returns the approximation degree of the current **simplifiable** [`RTyp`]
+    /// as a [`usize`].
+    ///
+    /// # Arguments
+    ///
+    /// * `system_adts` - The set of all the known ADT types in the system.
+    /// * `cache` - A map of the ADTs insepcted so far.
+    ///
+    /// # Returns
+    ///
+    /// A [`usize`] representing the initial approximation degree of [`RTyp`].
+    pub fn compute_approximation_degree(
+        &self,
+        system_adts: &BTreeSet<Typ>,
+        cache: &mut BTreeMap<Self, usize>,
+    ) {
+        if cache.contains_key(self) {
+            return;
+        }
+
+        if self.is_recursive(system_adts).is_ok_and(|v| v) {
+            cache.insert(self.clone(), 1);
+            return;
+        }
+
+        let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() else {
+            cache.insert(self.clone(), 1);
+            return;
+        };
+
+        let constructor_degree = dtyp
+            .news
+            .iter()
+            .map(|(_, args)| {
+                args.iter()
+                    .map(|(_, arg_ptyp)| arg_ptyp.degree_of_arg(generic_rtyps, system_adts, cache))
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0);
+
+        // Need one extra digit to discriminate between multiple constructors.
+        let discriminant_bit = if dtyp.news.len() > 1 { 1 } else { 0 };
+
+        cache.insert(self.clone(), constructor_degree + discriminant_bit);
+    }
+
+    /// Ensures [`RTtyp`] has an entry in `cache`, recursing if necessary.
+    pub(crate) fn ensure_cached(&self, system_adts: &BTreeSet<Typ>, cache: &mut BTreeMap<RTyp, usize>) {
+        if cache.contains_key(self) {
+            return;
+        }
+        else if self.is_recursive(system_adts).is_ok_and(|v| v) {
+        cache.insert(self.clone(), 1);
+    } else {
+        self.compute_approximation_degree(system_adts, cache);
+    }
+}
 
     /// Checks a type is legal.
     pub fn check(&self) -> Res<()> {

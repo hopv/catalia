@@ -147,6 +147,51 @@ impl PartialTyp {
             _ => None,
         }
     }
+
+    /// Returns the approximation degree of the current [`PartialTyp`]
+    /// as a [`usize`].
+    ///
+    /// # Arguments
+    ///
+    /// * `generic_rtyps` - The map  with all the concrete types for the paramters.
+    /// * `system_adts` - The set of all the known ADT types in the system.
+    /// * `cache` - A map of the ADTs insepcted so far.
+    ///
+    /// # Returns
+    ///
+    /// A [`usize`] representing the initial approximation degree of [`PartialTyp`].
+    pub fn degree_of_arg(
+        &self,
+        generic_rtyps: &TPrmMap<Typ>,
+        system_adts: &BTreeSet<Typ>,
+        cache: &mut BTreeMap<typ::RTyp, usize>,
+    ) -> usize {
+        match self {
+        PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
+            typ::RTyp::Int => 1,
+            typ::RTyp::DTyp { .. } => {
+                arg_rtyp.ensure_cached(system_adts, cache);
+                *cache.get(arg_rtyp.get()).unwrap_or(&0)
+            }
+            _ => 0,
+        },
+            PartialTyp::DTyp(_, _, _) => {
+                match self.to_type(Some(generic_rtyps)) {
+                    Ok(arg_rtyp) => {
+                        arg_rtyp.ensure_cached(system_adts, cache);
+                    *cache.get(&arg_rtyp).unwrap_or(&0)
+                    }
+                    Err(_) => 1,
+                }
+            }
+            PartialTyp::Param(idx) => {
+                let param_rtyp = generic_rtyps[*idx].get();
+                param_rtyp.ensure_cached(system_adts, cache);
+                *cache.get(param_rtyp).unwrap_or(&0)
+            }
+            _ => 0,
+        }
+    }
 }
 
 impl From<Typ> for PartialTyp {
