@@ -37,7 +37,7 @@
 //! ## Some Assumptions
 //! - set of ADT does not change from start to end during `work`
 //!   - they are defined as the global hashconsed objects
-use adt_graph::ADTDependencyGraph;
+use adt_graph::{ADTDependencyGraph, Category};
 use chc::AbsInstance;
 use enc::Encoder;
 
@@ -139,7 +139,12 @@ impl<'original> AbsConf<'original> {
     }
 
     fn flatten_non_recursive_adt(&mut self) -> Res<()> {
-        self.dependency_graph.flatten_static_adt(&mut self.encs)?;
+        self.dependency_graph.flatten_adt(&mut self.encs, Category::Static)?;
+        self.dependency_graph.flatten_adt(&mut self.encs, Category::Dynamic)?;
+        log_debug!("After the flattening");
+        for (typ, enc) in self.encs.iter() {
+            log_debug!("{} {}", typ, enc);
+        }
         Ok(())
     }
 
