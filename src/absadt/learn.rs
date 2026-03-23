@@ -39,6 +39,11 @@ impl TemplateInfo {
                             return true;
                         }
                     }
+                    Template::Dynamicemplification(dyn_approx) =>{
+                        if dyn_approx.approx.args.contains(var_info) {
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -68,7 +73,10 @@ impl TemplateInfo {
             let mut approxs = BTreeMap::new();
             if old_enc.statically_simplified {
                 StaticApprox::new(&mut approxs, &mut variables, &old_enc);
-            } else {
+            } else if old_enc.dinamically_simplified {
+                DynamicApprox::new(&mut approxs, &mut variables, &old_enc);
+            }
+            else {
                 Self::linear_apporx(
                     &mut approxs,
                     &mut variables,
@@ -335,6 +343,7 @@ pub struct LearnCtx<'a> {
 enum Template {
     Linear(LinearApprox),
     StaticSemplification(StaticApprox),
+    Dynamicemplification(DynamicApprox),
 }
 
 impl Approximation for Template {
@@ -342,6 +351,7 @@ impl Approximation for Template {
         match self {
             Template::Linear(approx) => approx.apply(arg_terms),
             Template::StaticSemplification(approx) => approx.apply(arg_terms),
+            Template::Dynamicemplification(approx) => approx.apply(arg_terms),
         }
     }
 }
@@ -351,12 +361,14 @@ impl Template {
         match self {
             Template::Linear(approx) => approx.instantiate(model),
             Template::StaticSemplification(approx) => approx.instantiate(),
+            Template::Dynamicemplification(approx) => approx.instantiate(),
         }
     }
     fn constraint(&self) -> Option<Term> {
         match self {
             Template::Linear(approx) => approx.constraint(),
             Template::StaticSemplification(_) => None,
+            Template::Dynamicemplification(_) => None,
         }
     }
     fn param_range(&self) -> Option<(i64, i64)> {
@@ -369,6 +381,7 @@ impl Template {
                 }
             }
             Template::StaticSemplification(_) => None,
+            Template::Dynamicemplification(_) => None,
         }
     }
 }
@@ -679,6 +692,10 @@ impl DynamicApprox {
                 }),
             );
         }
+    }
+
+    fn instantiate(&self) -> Approx {
+        self.approx.clone()
     }
 }
 
