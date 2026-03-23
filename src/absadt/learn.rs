@@ -131,7 +131,13 @@ impl TemplateInfo {
                 let ty = ty.to_type(Some(prms)).unwrap();
                 let is_recursive = encs.get(&ty).is_some();
                 let n_arg = if is_recursive {
-                    encs.get(&ty).unwrap().n_params
+                    if encs.get(&ty).is_some_and(
+                        |v| v.statically_simplified || v.dinamically_simplified
+                    ) {
+                        encs.get(&ty).unwrap().n_params
+                    } else{
+                        n_encs
+                    }
                 } else {
                     1
                 };
