@@ -99,18 +99,18 @@ where
     Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
 }
 
-/// Race-free cancellation group for parallel solver execution.
+/// Coordinates SIGKILL cancellation of solver process groups.
 ///
-/// Each registered value is a process-group ID (pgid).  On Unix, signals are
-/// sent to the entire group (via `kill(-pgid, sig)`) so subprocesses such as
-/// the JVM launched by the Eldarica shell script are also included.
+/// Each solver is spawned with `group_spawn()`, which calls `setpgid(0, 0)`
+/// so the process group leader's PID equals the pgid. Registering that PID
+/// via `GroupChild::id()` is therefore equivalent to registering the pgid,
+/// and `kill(-pgid, SIGKILL)` terminates the entire group (including any
+/// grandchild processes such as the JVM launched by the Eldarica shell script).
 ///
-/// `register` and `cancel` both hold the same mutex, so they are fully
-/// serialised: a pgid registered concurrently with a `cancel` call is
-/// either found in the vec and killed by `cancel`, or it sees the
-/// `cancelled` flag and is killed immediately inside `register`.
-/// There is therefore no window in which a late-registering thread can
-/// escape cancellation.
+/// `register` and `cancel` share a mutex so they are fully serialised:
+/// a pgid registered concurrently with `cancel` is either in the pending list
+/// and killed by `cancel`, or it arrives after `cancelled` is set and is
+/// killed immediately inside `register`. No late-registering solver can escape.
 struct CancelGroup {
     inner: std::sync::Mutex<CancelGroupInner>,
 }
@@ -130,7 +130,7 @@ impl CancelGroup {
         })
     }
 
-    /// Register `pgid`.  If already cancelled, kills it immediately.
+    /// Register a pgid (== `GroupChild::id()`). Kills immediately if already cancelled.
     fn register(&self, pgid: u32) {
         let mut g = self.inner.lock().expect("cancel group poisoned");
         if g.cancelled {
@@ -140,7 +140,7 @@ impl CancelGroup {
         }
     }
 
-    /// Mark as cancelled and immediately SIGKILL every registered process group.
+    /// SIGKILL all registered process groups.
     fn cancel(&self) {
         let mut g = self.inner.lock().expect("cancel group poisoned");
         g.cancelled = true;
@@ -148,8 +148,8 @@ impl CancelGroup {
     }
 }
 
-/// SIGKILL a process group. Parallel portfolio is Unix-only (rejected at
-/// arg-parse time on other platforms), so this is unconditionally Unix.
+/// SIGKILL the process group identified by `pgid` (`kill(-pgid, SIGKILL)`).
+/// Parallel portfolio is Unix-only, so the non-Unix stub just panics.
 #[cfg(unix)]
 fn kill_group(pgid: u32) {
     unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL); }
