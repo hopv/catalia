@@ -66,7 +66,7 @@ where
     I: Instance,
 {
     if !conf.no_eldarica {
-        match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false) {
+        match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false, None) {
             // Eldarica determined SAT
             Ok(true) => return Ok(either::Left(())),
             // Eldarica determined UNSAT
@@ -80,7 +80,7 @@ where
     }
 
     if !conf.no_hoice {
-        let b = run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false)
+        let b = run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false, None)
             .map_err(|e| log_info!("Hoice failed with {}", e))
             .unwrap_or(false);
         if b {
@@ -89,7 +89,7 @@ where
     }
 
     if !conf.no_spacer {
-        match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT), false) {
+        match run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT), false, None) {
             Ok(true) => return Ok(either::Left(())),
             Ok(false) => {},
             Err(e) => log_info!("Spacer (portfolio) failed with {}", e),
@@ -188,17 +188,17 @@ where
         if !conf.no_eldarica {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            s.spawn(move || { let _ = tx.send(eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel)); });
+            s.spawn(move || { let _ = tx.send(eld::run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false, Some(&cancel))); });
         }
         if !conf.no_hoice {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            s.spawn(move || { let _ = tx.send(hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel)); });
+            s.spawn(move || { let _ = tx.send(hoice::run_hoice(instance, Some(CHECK_CHC_TIMEOUT), false, Some(&cancel))); });
         }
         if !conf.no_spacer {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            s.spawn(move || { let _ = tx.send(spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel)); });
+            s.spawn(move || { let _ = tx.send(spacer::run_spacer_portfolio(instance, Some(CHECK_CHC_TIMEOUT), false, Some(&cancel))); });
         }
 
         drop(tx);

@@ -82,29 +82,12 @@ impl CHCSolver for Hoice {
     }
 }
 
-pub fn run_hoice<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+pub fn run_hoice<I>(instance: &I, timeout: Option<usize>, encode_tag: bool, cancel: Option<&CancelGroup>) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut hoice = Hoice::new(timeout)?;
+    if let Some(c) = cancel { c.register(hoice.child.id()); }
     hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
     hoice.check_sat()
-}
-
-/// Like [`run_hoice`] but registers the child's process-group ID (pgid)
-/// with `cancel` before blocking on I/O so that the caller can signal the
-/// entire process group for prompt cancellation.
-pub fn run_hoice_cancellable<I>(
-    instance: &I,
-    timeout: Option<usize>,
-    encode_tag: bool,
-    cancel: &CancelGroup,
-) -> Res<bool>
-where
-    I: InstanceT,
-{
-    let mut hoice = Hoice::new(timeout)?;
-    cancel.register(hoice.child.id());
-    hoice.dump_instance_with_encode_tag(instance, encode_tag)
-        .and_then(|_| hoice.check_sat())
 }

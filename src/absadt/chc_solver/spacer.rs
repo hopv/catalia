@@ -196,32 +196,12 @@ where
 /// Run Spacer in portfolio mode: plain sat/unsat check without proof generation.
 /// Uses `OPTION_PORTFOLIO` (omits the four proof-correctness flags) so that
 /// Spacer can apply its full preprocessing transforms for better performance.
-pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>, encode_tag: bool, cancel: Option<&CancelGroup>) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut spacer = Spacer::new_portfolio()?;
-    if let Some(sec) = timeout {
-        spacer.set_timeout(sec)?;
-    }
-    spacer.dump_instance_portfolio(instance, encode_tag)?;
-    spacer.check_sat()
-}
-
-/// Like [`run_spacer_portfolio`] but registers the child's process-group ID
-/// (pgid) with `cancel` before blocking on I/O so that the caller can signal
-/// the entire process group for prompt cancellation.
-pub fn run_spacer_portfolio_cancellable<I>(
-    instance: &I,
-    timeout: Option<usize>,
-    encode_tag: bool,
-    cancel: &CancelGroup,
-) -> Res<bool>
-where
-    I: InstanceT,
-{
-    let mut spacer = Spacer::new_portfolio()?;
-    cancel.register(spacer.child.id());
+    if let Some(c) = cancel { c.register(spacer.child.id()); }
     if let Some(sec) = timeout {
         spacer.set_timeout(sec)?;
     }

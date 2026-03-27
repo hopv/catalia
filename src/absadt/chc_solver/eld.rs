@@ -94,29 +94,12 @@ impl Eldarica {
     }
 }
 
-pub fn run_eldarica<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+pub fn run_eldarica<I>(instance: &I, timeout: Option<usize>, encode_tag: bool, cancel: Option<&CancelGroup>) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut eld = Eldarica::new(timeout, false)?;
-    eld.dump_instance(instance, encode_tag)?;
-    eld.check_sat()
-}
-
-/// Like [`run_eldarica`] but registers the child's process-group ID (pgid)
-/// with `cancel` before blocking on I/O so that the caller can signal the
-/// entire process group for prompt cancellation.
-pub fn run_eldarica_cancellable<I>(
-    instance: &I,
-    timeout: Option<usize>,
-    encode_tag: bool,
-    cancel: &CancelGroup,
-) -> Res<bool>
-where
-    I: InstanceT,
-{
-    let mut eld = Eldarica::new(timeout, false)?;
-    cancel.register(eld.child.id());
+    if let Some(c) = cancel { c.register(eld.child.id()); }
     eld.dump_instance(instance, encode_tag)?;
     eld.check_sat()
 }
