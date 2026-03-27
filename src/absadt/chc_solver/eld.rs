@@ -115,12 +115,11 @@ pub fn run_eldarica_cancellable<I>(
 where
     I: InstanceT,
 {
-    let eld = match Eldarica::new(timeout, false) {
+    let mut eld = match Eldarica::new(timeout, false) {
         Ok(e) => e,
         Err(e) => return super::WorkerResult::Failed(format!("Eldarica: {}", e)),
     };
     cancel.register(eld.child.id());
-    let mut eld = eld;
     let result = eld.dump_instance(instance, encode_tag).and_then(|_| eld.check_sat());
     match result {
         Ok(true)  => super::WorkerResult::Sat,

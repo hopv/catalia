@@ -220,12 +220,11 @@ pub fn run_spacer_portfolio_cancellable<I>(
 where
     I: InstanceT,
 {
-    let spacer = match Spacer::new_portfolio() {
+    let mut spacer = match Spacer::new_portfolio() {
         Ok(s) => s,
         Err(e) => return super::WorkerResult::Failed(format!("Spacer: {}", e)),
     };
     cancel.register(spacer.child.id());
-    let mut spacer = spacer;
     let result = if let Some(sec) = timeout {
         spacer.set_timeout(sec)
     } else {

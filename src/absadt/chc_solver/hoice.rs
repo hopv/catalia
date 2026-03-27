@@ -103,12 +103,11 @@ pub fn run_hoice_cancellable<I>(
 where
     I: InstanceT,
 {
-    let hoice = match Hoice::new(timeout) {
+    let mut hoice = match Hoice::new(timeout) {
         Ok(h) => h,
         Err(e) => return super::WorkerResult::Failed(format!("HoIce: {}", e)),
     };
     cancel.register(hoice.child.id());
-    let mut hoice = hoice;
     let result = hoice.dump_instance_with_encode_tag(instance, encode_tag)
         .and_then(|_| hoice.check_sat());
     match result {
