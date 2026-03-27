@@ -147,7 +147,7 @@ impl CancelGroup {
         let mut g = self.inner.lock().expect("cancel group poisoned");
         if g.cancelled {
             g.killed.insert(pgid);
-            kill_group_now(pgid);
+            kill_group(pgid);
         } else {
             g.pending.push(pgid);
         }
@@ -159,7 +159,7 @@ impl CancelGroup {
         g.cancelled = true;
         let pgids: Vec<u32> = g.pending.drain(..).collect();
         g.killed.extend(&pgids);
-        for &pgid in &pgids { kill_group_now(pgid); }
+        for &pgid in &pgids { kill_group(pgid); }
     }
 
     /// True if `pgid` was explicitly killed by `cancel()` or late `register()`.
@@ -168,24 +168,16 @@ impl CancelGroup {
     }
 }
 
-/// Send `sig` to the process group identified by `pgid`.
-///
-/// `libc::kill` treats a negative first argument as `-(pgid)`, which
-/// targets every process in the group — including subprocesses such as
-/// the JVM launched by the Eldarica shell script.
+/// SIGKILL a process group. Parallel portfolio is Unix-only (rejected at
+/// arg-parse time on other platforms), so this is unconditionally Unix.
 #[cfg(unix)]
-fn signal_group(pgid: u32, sig: libc::c_int) -> libc::c_int {
-    // SAFETY: Sending a signal to a process group we own is safe.
-    // Sending to a group that has already exited returns -1/ESRCH, which we ignore.
-    unsafe { libc::kill(-(pgid as libc::pid_t), sig) }
+fn kill_group(pgid: u32) {
+    unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL); }
 }
-#[cfg(not(unix))]
-fn signal_group(_: u32, _: i32) -> i32 { 0 }
 
-/// Immediate SIGKILL to a process group (no grace period).
-fn kill_group_now(pgid: u32) {
-    #[cfg(unix)] { signal_group(pgid, libc::SIGKILL); }
-    #[cfg(not(unix))] let _ = pgid;
+#[cfg(not(unix))]
+fn kill_group(_: u32) {
+    unreachable!("--parallel-portfolio is not supported on this platform");
 }
 
 /// Run all enabled solvers in parallel and return the first conclusive result.
