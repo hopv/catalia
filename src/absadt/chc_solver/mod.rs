@@ -153,35 +153,13 @@ impl CancelGroup {
         }
     }
 
-    /// Mark as cancelled and kill every registered process group.
-    ///
-    /// Sends SIGTERM to all groups simultaneously, polls for up to 500 ms,
-    /// then sends SIGKILL to any survivors.
+    /// Mark as cancelled and immediately SIGKILL every registered process group.
     fn cancel(&self) {
-        let pgids: Vec<u32> = {
-            let mut g = self.inner.lock().expect("cancel group poisoned");
-            g.cancelled = true;
-            let pgids: Vec<u32> = g.pending.drain(..).collect();
-            g.killed.extend(&pgids);
-            pgids
-        };
-
-        #[cfg(unix)]
-        for &pgid in &pgids { signal_group(pgid, libc::SIGTERM); }
-
-        #[cfg(unix)] {
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_millis(500);
-            let mut alive: Vec<u32> = pgids.clone();
-            while !alive.is_empty() && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                alive.retain(|&pgid| unsafe {
-                    libc::kill(-(pgid as libc::pid_t), 0) == 0
-                });
-            }
-            for &pgid in &alive { signal_group(pgid, libc::SIGKILL); }
-        }
-        #[cfg(not(unix))] let _ = pgids;
+        let mut g = self.inner.lock().expect("cancel group poisoned");
+        g.cancelled = true;
+        let pgids: Vec<u32> = g.pending.drain(..).collect();
+        g.killed.extend(&pgids);
+        for &pgid in &pgids { kill_group_now(pgid); }
     }
 
     /// True if `pgid` was explicitly killed by `cancel()` or late `register()`.
