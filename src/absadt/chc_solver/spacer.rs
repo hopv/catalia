@@ -216,25 +216,15 @@ pub fn run_spacer_portfolio_cancellable<I>(
     timeout: Option<usize>,
     encode_tag: bool,
     cancel: &CancelGroup,
-) -> super::WorkerResult
+) -> Res<bool>
 where
     I: InstanceT,
 {
-    let mut spacer = match Spacer::new_portfolio() {
-        Ok(s) => s,
-        Err(e) => return super::WorkerResult::Failed(format!("Spacer: {}", e)),
-    };
+    let mut spacer = Spacer::new_portfolio()?;
     cancel.register(spacer.child.id());
-    let result = if let Some(sec) = timeout {
-        spacer.set_timeout(sec)
-    } else {
-        Ok(())
+    if let Some(sec) = timeout {
+        spacer.set_timeout(sec)?;
     }
-    .and_then(|_| spacer.dump_instance_portfolio(instance, encode_tag))
-    .and_then(|_| spacer.check_sat());
-    match result {
-        Ok(true)  => super::WorkerResult::Sat,
-        Ok(false) => super::WorkerResult::Unsat,
-        Err(e) => super::WorkerResult::Failed(format!("Spacer: {}", e)),
-    }
+    spacer.dump_instance_portfolio(instance, encode_tag)?;
+    spacer.check_sat()
 }

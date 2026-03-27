@@ -111,21 +111,14 @@ pub fn run_eldarica_cancellable<I>(
     timeout: Option<usize>,
     encode_tag: bool,
     cancel: &CancelGroup,
-) -> super::WorkerResult
+) -> Res<bool>
 where
     I: InstanceT,
 {
-    let mut eld = match Eldarica::new(timeout, false) {
-        Ok(e) => e,
-        Err(e) => return super::WorkerResult::Failed(format!("Eldarica: {}", e)),
-    };
+    let mut eld = Eldarica::new(timeout, false)?;
     cancel.register(eld.child.id());
-    let result = eld.dump_instance(instance, encode_tag).and_then(|_| eld.check_sat());
-    match result {
-        Ok(true)  => super::WorkerResult::Sat,
-        Ok(false) => super::WorkerResult::Unsat,
-        Err(e) => super::WorkerResult::Failed(format!("Eldarica: {}", e)),
-    }
+    eld.dump_instance(instance, encode_tag)?;
+    eld.check_sat()
 }
 
 /// Run Eldarica with counterexample generation

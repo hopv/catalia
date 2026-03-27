@@ -99,20 +99,12 @@ pub fn run_hoice_cancellable<I>(
     timeout: Option<usize>,
     encode_tag: bool,
     cancel: &CancelGroup,
-) -> super::WorkerResult
+) -> Res<bool>
 where
     I: InstanceT,
 {
-    let mut hoice = match Hoice::new(timeout) {
-        Ok(h) => h,
-        Err(e) => return super::WorkerResult::Failed(format!("HoIce: {}", e)),
-    };
+    let mut hoice = Hoice::new(timeout)?;
     cancel.register(hoice.child.id());
-    let result = hoice.dump_instance_with_encode_tag(instance, encode_tag)
-        .and_then(|_| hoice.check_sat());
-    match result {
-        Ok(true)  => super::WorkerResult::Sat,
-        Ok(false) => super::WorkerResult::Unsat,
-        Err(e) => super::WorkerResult::Failed(format!("HoIce: {}", e)),
-    }
+    hoice.dump_instance_with_encode_tag(instance, encode_tag)
+        .and_then(|_| hoice.check_sat())
 }

@@ -99,13 +99,6 @@ where
     Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
 }
 
-/// Result from a parallel solver worker.
-enum WorkerResult {
-    Sat,
-    Unsat,
-    Failed(String),
-}
-
 /// Race-free cancellation group for parallel solver execution.
 ///
 /// Each registered value is a process-group ID (pgid).  On Unix, signals are
@@ -188,7 +181,7 @@ where
 {
     use std::sync::{mpsc, Arc};
 
-    let (tx, rx) = mpsc::channel::<WorkerResult>();
+    let (tx, rx) = mpsc::channel::<Res<bool>>();
     let cancel = CancelGroup::new();
 
     let result = std::thread::scope(|s| {
@@ -212,8 +205,8 @@ where
 
         let result = loop {
             match rx.recv() {
-                Ok(r @ (WorkerResult::Sat | WorkerResult::Unsat)) => break Some(r),
-                Ok(WorkerResult::Failed(e)) => log_info!("solver failed: {}", e),
+                Ok(Ok(sat)) => break Some(sat),
+                Ok(Err(e)) => log_info!("solver failed: {}", e),
                 Err(_) => break None, // all solvers done, none conclusive
             }
         };
@@ -222,7 +215,7 @@ where
     });
 
     Ok(match result {
-        Some(WorkerResult::Sat) => either::Left(()),
+        Some(true) => either::Left(()),
         _ => either::Right((hyper_res::ResolutionProof::new(), false)),
     })
 }
