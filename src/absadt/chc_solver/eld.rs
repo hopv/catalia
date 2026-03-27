@@ -121,10 +121,8 @@ where
     };
     let pgid = eld.child.id();
     cancel.register(pgid);
-    let result = (|mut eld: Eldarica| -> Res<bool> {
-        eld.dump_instance(instance, encode_tag)?;
-        eld.check_sat()
-    })(eld);
+    let mut eld = eld;
+    let result = eld.dump_instance(instance, encode_tag).and_then(|_| eld.check_sat());
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,

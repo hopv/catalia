@@ -226,13 +226,14 @@ where
     };
     let pgid = spacer.child.id();
     cancel.register(pgid);
-    let result = (|mut spacer: Spacer| -> Res<bool> {
-        if let Some(sec) = timeout {
-            spacer.set_timeout(sec)?;
-        }
-        spacer.dump_instance_portfolio(instance, encode_tag)?;
-        spacer.check_sat()
-    })(spacer);
+    let mut spacer = spacer;
+    let result = if let Some(sec) = timeout {
+        spacer.set_timeout(sec)
+    } else {
+        Ok(())
+    }
+    .and_then(|_| spacer.dump_instance_portfolio(instance, encode_tag))
+    .and_then(|_| spacer.check_sat());
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,

@@ -109,10 +109,9 @@ where
     };
     let pgid = hoice.child.id();
     cancel.register(pgid);
-    let result = (|mut hoice: Hoice| -> Res<bool> {
-        hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
-        hoice.check_sat()
-    })(hoice);
+    let mut hoice = hoice;
+    let result = hoice.dump_instance_with_encode_tag(instance, encode_tag)
+        .and_then(|_| hoice.check_sat());
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
