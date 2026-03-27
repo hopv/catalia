@@ -195,42 +195,28 @@ where
         if !conf.no_eldarica {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            s.spawn(move || {
-                let r = eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
-                match r {
-                    WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Failed(ref e) => { log_info!("Eldarica failed: {}", e); },
-                }
-            });
+            s.spawn(move || { let _ = tx.send(eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel)); });
         }
-
         if !conf.no_hoice {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            s.spawn(move || {
-                let r = hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
-                match r {
-                    WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Failed(ref e) => { log_info!("HoIce failed: {}", e); },
-                }
-            });
+            s.spawn(move || { let _ = tx.send(hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel)); });
         }
-
         if !conf.no_spacer {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            s.spawn(move || {
-                let r = spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
-                match r {
-                    WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Failed(ref e) => { log_info!("Spacer failed: {}", e); },
-                }
-            });
+            s.spawn(move || { let _ = tx.send(spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel)); });
         }
 
         drop(tx);
 
-        let result = rx.recv().ok();
+        let result = loop {
+            match rx.recv() {
+                Ok(r @ (WorkerResult::Sat | WorkerResult::Unsat)) => break Some(r),
+                Ok(WorkerResult::Failed(e)) => log_info!("solver failed: {}", e),
+                Err(_) => break None, // all solvers done, none conclusive
+            }
+        };
         cancel.cancel();
         result
     });

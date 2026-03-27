@@ -105,7 +105,7 @@ where
 {
     let hoice = match Hoice::new(timeout) {
         Ok(h) => h,
-        Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
+        Err(e) => return super::WorkerResult::Failed(format!("HoIce: {}", e)),
     };
     cancel.register(hoice.child.id());
     let mut hoice = hoice;
@@ -114,6 +114,6 @@ where
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
-        Err(e) => super::WorkerResult::Failed(format!("{}", e)),
+        Err(e) => super::WorkerResult::Failed(format!("HoIce: {}", e)),
     }
 }

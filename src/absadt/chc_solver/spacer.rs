@@ -222,7 +222,7 @@ where
 {
     let spacer = match Spacer::new_portfolio() {
         Ok(s) => s,
-        Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
+        Err(e) => return super::WorkerResult::Failed(format!("Spacer: {}", e)),
     };
     cancel.register(spacer.child.id());
     let mut spacer = spacer;
@@ -236,6 +236,6 @@ where
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
-        Err(e) => super::WorkerResult::Failed(format!("{}", e)),
+        Err(e) => super::WorkerResult::Failed(format!("Spacer: {}", e)),
     }
 }

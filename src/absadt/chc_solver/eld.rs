@@ -117,7 +117,7 @@ where
 {
     let eld = match Eldarica::new(timeout, false) {
         Ok(e) => e,
-        Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
+        Err(e) => return super::WorkerResult::Failed(format!("Eldarica: {}", e)),
     };
     cancel.register(eld.child.id());
     let mut eld = eld;
@@ -125,7 +125,7 @@ where
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
-        Err(e) => super::WorkerResult::Failed(format!("{}", e)),
+        Err(e) => super::WorkerResult::Failed(format!("Eldarica: {}", e)),
     }
 }
 
