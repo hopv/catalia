@@ -219,3 +219,55 @@ where
         _ => either::Right((hyper_res::ResolutionProof::new(), false)),
     })
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use command_group::CommandGroup;
+    use std::io::BufRead;
+
+    fn pid_exists(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Verify that `CancelGroup::cancel()` kills the entire process group,
+    /// including grandchild processes spawned by the group leader.
+    #[test]
+    fn cancel_kills_entire_process_group() {
+        // Shell: spawn a grandchild (sleep), print its PID, then loop forever.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 10000 & echo $!; sleep 10000"])
+            .stdout(std::process::Stdio::piped())
+            .group_spawn()
+            .unwrap();
+
+        let pgid = child.id() as i32;
+
+        // Read the grandchild PID printed by the shell.
+        let grandchild_pid: i32 = {
+            let stdout = child.inner().stdout.take().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(stdout).read_line(&mut line).unwrap();
+            line.trim().parse().unwrap()
+        };
+
+        assert!(pid_exists(pgid), "process group leader should be alive");
+        assert!(pid_exists(grandchild_pid), "grandchild should be alive");
+
+        let cancel = CancelGroup::new();
+        cancel.register(child.id());
+        cancel.cancel();
+
+        // Reap the direct child so it doesn't stay a zombie.
+        let _ = child.wait();
+
+        // Grandchild is adopted by init after the shell dies; poll until reaped.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while pid_exists(grandchild_pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(!pid_exists(pgid), "process group leader should be dead");
+        assert!(!pid_exists(grandchild_pid), "grandchild should be dead");
+    }
+}
