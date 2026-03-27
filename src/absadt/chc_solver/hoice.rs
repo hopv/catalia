@@ -107,18 +107,13 @@ where
         Ok(h) => h,
         Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
     };
-    let pgid = hoice.child.id();
-    cancel.register(pgid);
+    cancel.register(hoice.child.id());
     let mut hoice = hoice;
     let result = hoice.dump_instance_with_encode_tag(instance, encode_tag)
         .and_then(|_| hoice.check_sat());
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
-        Err(e) if cancel.was_killed(pgid) => {
-            log_info!("HoIce cancelled: {}", e);
-            super::WorkerResult::Cancelled
-        }
         Err(e) => super::WorkerResult::Failed(format!("{}", e)),
     }
 }

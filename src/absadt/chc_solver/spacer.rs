@@ -224,8 +224,7 @@ where
         Ok(s) => s,
         Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
     };
-    let pgid = spacer.child.id();
-    cancel.register(pgid);
+    cancel.register(spacer.child.id());
     let mut spacer = spacer;
     let result = if let Some(sec) = timeout {
         spacer.set_timeout(sec)
@@ -237,10 +236,6 @@ where
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
-        Err(e) if cancel.was_killed(pgid) => {
-            log_info!("Spacer cancelled: {}", e);
-            super::WorkerResult::Cancelled
-        }
         Err(e) => super::WorkerResult::Failed(format!("{}", e)),
     }
 }

@@ -103,9 +103,6 @@ where
 enum WorkerResult {
     Sat,
     Unsat,
-    /// The solver was killed by us (cancellation).
-    Cancelled,
-    /// The solver failed for a genuine reason.
     Failed(String),
 }
 
@@ -128,7 +125,6 @@ struct CancelGroup {
 struct CancelGroupInner {
     cancelled: bool,
     pending: Vec<u32>,
-    killed: std::collections::HashSet<u32>,
 }
 
 impl CancelGroup {
@@ -137,7 +133,6 @@ impl CancelGroup {
             inner: std::sync::Mutex::new(CancelGroupInner {
                 cancelled: false,
                 pending: Vec::new(),
-                killed: std::collections::HashSet::new(),
             }),
         })
     }
@@ -146,7 +141,6 @@ impl CancelGroup {
     fn register(&self, pgid: u32) {
         let mut g = self.inner.lock().expect("cancel group poisoned");
         if g.cancelled {
-            g.killed.insert(pgid);
             kill_group(pgid);
         } else {
             g.pending.push(pgid);
@@ -157,14 +151,7 @@ impl CancelGroup {
     fn cancel(&self) {
         let mut g = self.inner.lock().expect("cancel group poisoned");
         g.cancelled = true;
-        let pgids: Vec<u32> = g.pending.drain(..).collect();
-        g.killed.extend(&pgids);
-        for &pgid in &pgids { kill_group(pgid); }
-    }
-
-    /// True if `pgid` was explicitly killed by `cancel()` or late `register()`.
-    fn was_killed(&self, pgid: u32) -> bool {
-        self.inner.lock().expect("cancel group poisoned").killed.contains(&pgid)
+        for &pgid in &g.pending { kill_group(pgid); }
     }
 }
 
@@ -216,7 +203,6 @@ where
                 let r = eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
                 match r {
                     WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Cancelled => {},
                     WorkerResult::Failed(ref e) => {
                         log_info!("Eldarica failed with {}", e);
                         eldarica_errored.store(true, Ordering::SeqCst);
@@ -232,7 +218,6 @@ where
                 let r = hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
                 match r {
                     WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Cancelled => {},
                     WorkerResult::Failed(ref e) => { log_info!("HoIce failed with {}", e); },
                 }
             });
@@ -245,7 +230,6 @@ where
                 let r = spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
                 match r {
                     WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Cancelled => {},
                     WorkerResult::Failed(ref e) => { log_info!("Spacer (portfolio) failed with {}", e); },
                 }
             });

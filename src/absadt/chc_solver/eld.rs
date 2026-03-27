@@ -119,17 +119,12 @@ where
         Ok(e) => e,
         Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
     };
-    let pgid = eld.child.id();
-    cancel.register(pgid);
+    cancel.register(eld.child.id());
     let mut eld = eld;
     let result = eld.dump_instance(instance, encode_tag).and_then(|_| eld.check_sat());
     match result {
         Ok(true)  => super::WorkerResult::Sat,
         Ok(false) => super::WorkerResult::Unsat,
-        Err(e) if cancel.was_killed(pgid) => {
-            log_info!("Eldarica cancelled: {}", e);
-            super::WorkerResult::Cancelled
-        }
         Err(e) => super::WorkerResult::Failed(format!("{}", e)),
     }
 }
