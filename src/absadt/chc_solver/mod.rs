@@ -99,6 +99,16 @@ where
     Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
 }
 
+/// Result from a parallel solver worker.
+enum WorkerResult {
+    Sat,
+    Unsat,
+    /// The solver was killed by us (cancellation).
+    Cancelled,
+    /// The solver failed for a genuine reason.
+    Failed(String),
+}
+
 /// Race-free cancellation group for parallel solver execution.
 ///
 /// Each registered value is a process-group ID (pgid).  On Unix, signals are
@@ -111,17 +121,36 @@ where
 /// `cancelled` flag and is killed immediately inside `register`.
 /// There is therefore no window in which a late-registering thread can
 /// escape cancellation.
-struct CancelGroup(std::sync::Mutex<(bool, Vec<u32>)>);
+struct CancelGroup {
+    inner: std::sync::Mutex<CancelGroupInner>,
+}
+
+struct CancelGroupInner {
+    cancelled: bool,
+    pending: Vec<u32>,
+    killed: std::collections::HashSet<u32>,
+}
 
 impl CancelGroup {
     fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self(std::sync::Mutex::new((false, Vec::new()))))
+        std::sync::Arc::new(Self {
+            inner: std::sync::Mutex::new(CancelGroupInner {
+                cancelled: false,
+                pending: Vec::new(),
+                killed: std::collections::HashSet::new(),
+            }),
+        })
     }
 
     /// Register `pgid`.  If already cancelled, kills it immediately.
     fn register(&self, pgid: u32) {
-        let mut g = self.0.lock().expect("cancel group poisoned");
-        if g.0 { kill_group_now(pgid); } else { g.1.push(pgid); }
+        let mut g = self.inner.lock().expect("cancel group poisoned");
+        if g.cancelled {
+            g.killed.insert(pgid);
+            kill_group_now(pgid);
+        } else {
+            g.pending.push(pgid);
+        }
     }
 
     /// Mark as cancelled and kill every registered process group.
@@ -129,38 +158,35 @@ impl CancelGroup {
     /// Sends SIGTERM to all groups simultaneously, polls for up to 500 ms,
     /// then sends SIGKILL to any survivors.
     fn cancel(&self) {
-        // Drain vec and set flag under lock; release before sleeping.
         let pgids: Vec<u32> = {
-            let mut g = self.0.lock().expect("cancel group poisoned");
-            g.0 = true;
-            g.1.drain(..).collect()
+            let mut g = self.inner.lock().expect("cancel group poisoned");
+            g.cancelled = true;
+            let pgids: Vec<u32> = g.pending.drain(..).collect();
+            g.killed.extend(&pgids);
+            pgids
         };
 
-        // Send SIGTERM to all groups simultaneously.
         #[cfg(unix)]
         for &pgid in &pgids { signal_group(pgid, libc::SIGTERM); }
 
-        // Poll for up to 500 ms, checking all groups together.
         #[cfg(unix)] {
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_millis(500);
             let mut alive: Vec<u32> = pgids.clone();
             while !alive.is_empty() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                // kill(-pgid, 0) returns -1/ESRCH when the group is gone.
                 alive.retain(|&pgid| unsafe {
                     libc::kill(-(pgid as libc::pid_t), 0) == 0
                 });
             }
-            // SIGKILL any survivors.
             for &pgid in &alive { signal_group(pgid, libc::SIGKILL); }
         }
         #[cfg(not(unix))] let _ = pgids;
     }
 
-    /// True after `cancel()` has been called.
-    fn is_cancelled(&self) -> bool {
-        self.0.lock().expect("cancel group poisoned").0
+    /// True if `pgid` was explicitly killed by `cancel()` or late `register()`.
+    fn was_killed(&self, pgid: u32) -> bool {
+        self.inner.lock().expect("cancel group poisoned").killed.contains(&pgid)
     }
 }
 
@@ -193,14 +219,10 @@ fn kill_group_now(pgid: u32) {
 /// `std::thread::scope` then joins the now-quick-to-exit threads before
 /// returning.
 ///
-/// Latency after the winning solver finishes is bounded by process teardown
-/// time (typically milliseconds), not by `CHECK_CHC_TIMEOUT`.
-///
-/// **Unix only.** `--parallel-portfolio` is rejected at argument-parse time
-/// on non-Unix platforms so this function is never reached there.
-///
 /// The `eldarica_error` flag in the returned `Right` is only set when
 /// Eldarica fails for a genuine reason (not because we killed it ourselves).
+/// Attribution is per-pgid, so a genuine Eldarica failure racing with another
+/// solver's win is correctly classified.
 fn portfolio_parallel<I>(
     instance: &I,
 ) -> Res<either::Either<(), (hyper_res::ResolutionProof, bool)>>
@@ -210,10 +232,8 @@ where
     use std::sync::{mpsc, Arc};
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    // Channel carries Left(()) = SAT or Right(()) = UNSAT.
-    // eldarica_error is tracked separately to avoid conflating it with
-    // which solver happened to win the race.
-    let (tx, rx) = mpsc::channel::<either::Either<(), ()>>();
+    // Channel carries the solver outcome (only Sat/Unsat are sent).
+    let (tx, rx) = mpsc::channel::<WorkerResult>();
     let cancel = CancelGroup::new();
     let eldarica_errored = Arc::new(AtomicBool::new(false));
 
@@ -223,16 +243,13 @@ where
             let cancel = Arc::clone(&cancel);
             let eldarica_errored = Arc::clone(&eldarica_errored);
             s.spawn(move || {
-                match eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel) {
-                    Ok(true)  => { let _ = tx.send(either::Left(())); },
-                    Ok(false) => { let _ = tx.send(either::Right(())); },
-                    Err(e)    => {
+                let r = eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
+                match r {
+                    WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
+                    WorkerResult::Cancelled => {},
+                    WorkerResult::Failed(ref e) => {
                         log_info!("Eldarica failed with {}", e);
-                        // Only flag a genuine failure; an error caused by
-                        // our own SIGKILL is expected and benign.
-                        if !cancel.is_cancelled() {
-                            eldarica_errored.store(true, Ordering::SeqCst);
-                        }
+                        eldarica_errored.store(true, Ordering::SeqCst);
                     },
                 }
             });
@@ -242,10 +259,11 @@ where
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
             s.spawn(move || {
-                match hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel) {
-                    Ok(true)  => { let _ = tx.send(either::Left(())); },
-                    Ok(false) => { let _ = tx.send(either::Right(())); },
-                    Err(e)    => { log_info!("HoIce failed with {}", e); },
+                let r = hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
+                match r {
+                    WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
+                    WorkerResult::Cancelled => {},
+                    WorkerResult::Failed(ref e) => { log_info!("HoIce failed with {}", e); },
                 }
             });
         }
@@ -254,22 +272,18 @@ where
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
             s.spawn(move || {
-                match spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel) {
-                    Ok(true)  => { let _ = tx.send(either::Left(())); },
-                    Ok(false) => { let _ = tx.send(either::Right(())); },
-                    Err(e)    => { log_info!("Spacer (portfolio) failed with {}", e); },
+                let r = spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
+                match r {
+                    WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
+                    WorkerResult::Cancelled => {},
+                    WorkerResult::Failed(ref e) => { log_info!("Spacer (portfolio) failed with {}", e); },
                 }
             });
         }
 
-        // Drop the main sender so the channel closes once all threads finish.
         drop(tx);
 
-        // Block until the first conclusive result (or channel close if all fail).
-        let result = match rx.recv() {
-            Ok(r)  => r,
-            Err(_) => either::Right(()),
-        };
+        let result = rx.recv().ok();
 
         // Signal every remaining solver process group; threads unblock immediately.
         cancel.cancel();
@@ -279,7 +293,7 @@ where
 
     let eldarica_error = eldarica_errored.load(Ordering::SeqCst);
     Ok(match result {
-        either::Left(())  => either::Left(()),
-        either::Right(()) => either::Right((hyper_res::ResolutionProof::new(), eldarica_error)),
+        Some(WorkerResult::Sat) => either::Left(()),
+        _ => either::Right((hyper_res::ResolutionProof::new(), eldarica_error)),
     })
 }

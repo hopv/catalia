@@ -9,8 +9,15 @@ use std::process::{Command, Stdio};
 
 pub struct Hoice {
     child: command_group::GroupChild,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for Hoice {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 const OPTION: [&str; 0] = [];
@@ -33,7 +40,7 @@ impl Hoice {
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
         })
     }
@@ -44,18 +51,17 @@ impl CHCSolver for Hoice {
     where
         I: InstanceT,
     {
-        instance.dump_as_smt2(&mut self.stdin, "", encode_tag)?;
+        instance.dump_as_smt2(self.stdin.as_mut().expect("stdin already closed"), "", encode_tag)?;
         Ok(())
     }
 
     fn check_sat(mut self) -> Res<bool> {
         let mut line = String::new();
-        writeln!(&mut self.stdin, "(exit)").discard();
+        writeln!(self.stdin.as_mut().expect("stdin already closed"), "(exit)").discard();
+        // Close stdin so the child sees EOF after "(exit)".
+        drop(self.stdin.take());
 
         self.stdout.read_to_string(&mut line)?;
-
-        let _ = self.child.kill();
-        let _ = self.child.wait(); // reap to prevent zombie
 
         if line.starts_with("sat") {
             Ok(true)
@@ -71,7 +77,7 @@ impl CHCSolver for Hoice {
         S: AsRef<[u8]>,
     {
         let s = s.as_ref();
-        self.stdin.write_all(s)?;
+        self.stdin.as_mut().expect("stdin already closed").write_all(s)?;
         Ok(())
     }
 }
@@ -93,12 +99,27 @@ pub fn run_hoice_cancellable<I>(
     timeout: Option<usize>,
     encode_tag: bool,
     cancel: &CancelGroup,
-) -> Res<bool>
+) -> super::WorkerResult
 where
     I: InstanceT,
 {
-    let mut hoice = Hoice::new(timeout)?;
-    cancel.register(hoice.child.id());
-    hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
-    hoice.check_sat()
+    let hoice = match Hoice::new(timeout) {
+        Ok(h) => h,
+        Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
+    };
+    let pgid = hoice.child.id();
+    cancel.register(pgid);
+    let result = (|mut hoice: Hoice| -> Res<bool> {
+        hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
+        hoice.check_sat()
+    })(hoice);
+    match result {
+        Ok(true)  => super::WorkerResult::Sat,
+        Ok(false) => super::WorkerResult::Unsat,
+        Err(e) if cancel.was_killed(pgid) => {
+            log_info!("HoIce cancelled: {}", e);
+            super::WorkerResult::Cancelled
+        }
+        Err(e) => super::WorkerResult::Failed(format!("{}", e)),
+    }
 }

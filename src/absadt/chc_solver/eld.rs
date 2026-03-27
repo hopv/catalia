@@ -10,8 +10,15 @@ use std::process::{Command, Stdio};
 
 pub struct Eldarica {
     child: command_group::GroupChild,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for Eldarica {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 const OPTION: [&str; 0] = [];
@@ -37,7 +44,7 @@ impl Eldarica {
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
         })
     }
@@ -48,34 +55,16 @@ impl Eldarica {
     where
         I: InstanceT,
     {
-        instance.dump_as_smt2(&mut self.stdin, "", encode_tag)?;
+        instance.dump_as_smt2(self.stdin.as_mut().expect("stdin already closed"), "", encode_tag)?;
         Ok(())
     }
 
-    fn check_sat(self) -> Res<bool> {
-        let Self {
-            stdin,
-            stdout,
-            mut child,
-            ..
-        } = self;
-        fn inner(
-            stdin: std::process::ChildStdin,
-            mut stdout: BufReader<std::process::ChildStdout>,
-        ) -> Res<String> {
-            stdin.discard();
+    fn check_sat(&mut self) -> Res<bool> {
+        // Close stdin to signal EOF to the child.
+        drop(self.stdin.take());
 
-            let mut line = String::new();
-            stdout.read_to_string(&mut line)?;
-            Ok(line)
-        }
-
-        let res = inner(stdin, stdout);
-        // kill child process before returning
-        let _ = child.kill();
-        let _ = child.wait(); // reap to prevent zombie
-
-        let line = res?;
+        let mut line = String::new();
+        self.stdout.read_to_string(&mut line)?;
 
         if line.starts_with("sat") {
             Ok(true)
@@ -87,36 +76,16 @@ impl Eldarica {
     }
 
     /// Check satisfiability and return counterexample if unsat
-    fn check_sat_with_cex(self) -> Res<either::Either<(), hyper_res::ResolutionProof>> {
-        let Self {
-            stdin,
-            stdout,
-            mut child,
-            ..
-        } = self;
+    fn check_sat_with_cex(&mut self) -> Res<either::Either<(), hyper_res::ResolutionProof>> {
+        // Close stdin to signal EOF to the child.
+        drop(self.stdin.take());
 
-        fn inner(
-            stdin: std::process::ChildStdin,
-            mut stdout: BufReader<std::process::ChildStdout>,
-        ) -> Res<String> {
-            stdin.discard();
-
-            let mut output = String::new();
-            stdout.read_to_string(&mut output)?;
-            Ok(output)
-        }
-
-        let res = inner(stdin, stdout);
-        // kill child process before returning
-        let _ = child.kill();
-        let _ = child.wait(); // reap to prevent zombie
-
-        let output = res?;
+        let mut output = String::new();
+        self.stdout.read_to_string(&mut output)?;
 
         if output.starts_with("sat") {
             Ok(either::Left(()))
         } else if output.starts_with("unsat") {
-            // Parse the counterexample
             let proof = eld_cex::parse_eldarica_cex(&output)?;
             Ok(either::Right(proof))
         } else {
@@ -142,14 +111,29 @@ pub fn run_eldarica_cancellable<I>(
     timeout: Option<usize>,
     encode_tag: bool,
     cancel: &CancelGroup,
-) -> Res<bool>
+) -> super::WorkerResult
 where
     I: InstanceT,
 {
-    let mut eld = Eldarica::new(timeout, false)?;
-    cancel.register(eld.child.id());
-    eld.dump_instance(instance, encode_tag)?;
-    eld.check_sat()
+    let eld = match Eldarica::new(timeout, false) {
+        Ok(e) => e,
+        Err(e) => return super::WorkerResult::Failed(format!("{}", e)),
+    };
+    let pgid = eld.child.id();
+    cancel.register(pgid);
+    let result = (|mut eld: Eldarica| -> Res<bool> {
+        eld.dump_instance(instance, encode_tag)?;
+        eld.check_sat()
+    })(eld);
+    match result {
+        Ok(true)  => super::WorkerResult::Sat,
+        Ok(false) => super::WorkerResult::Unsat,
+        Err(e) if cancel.was_killed(pgid) => {
+            log_info!("Eldarica cancelled: {}", e);
+            super::WorkerResult::Cancelled
+        }
+        Err(e) => super::WorkerResult::Failed(format!("{}", e)),
+    }
 }
 
 /// Run Eldarica with counterexample generation
