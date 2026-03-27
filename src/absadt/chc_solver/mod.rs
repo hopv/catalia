@@ -187,26 +187,19 @@ where
     I: Instance + Sync,
 {
     use std::sync::{mpsc, Arc};
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    // Channel carries the solver outcome (only Sat/Unsat are sent).
     let (tx, rx) = mpsc::channel::<WorkerResult>();
     let cancel = CancelGroup::new();
-    let eldarica_errored = Arc::new(AtomicBool::new(false));
 
     let result = std::thread::scope(|s| {
         if !conf.no_eldarica {
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);
-            let eldarica_errored = Arc::clone(&eldarica_errored);
             s.spawn(move || {
                 let r = eld::run_eldarica_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
                 match r {
                     WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Failed(ref e) => {
-                        log_info!("Eldarica failed with {}", e);
-                        eldarica_errored.store(true, Ordering::SeqCst);
-                    },
+                    WorkerResult::Failed(ref e) => { log_info!("Eldarica failed: {}", e); },
                 }
             });
         }
@@ -218,7 +211,7 @@ where
                 let r = hoice::run_hoice_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
                 match r {
                     WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Failed(ref e) => { log_info!("HoIce failed with {}", e); },
+                    WorkerResult::Failed(ref e) => { log_info!("HoIce failed: {}", e); },
                 }
             });
         }
@@ -230,7 +223,7 @@ where
                 let r = spacer::run_spacer_portfolio_cancellable(instance, Some(CHECK_CHC_TIMEOUT), false, &cancel);
                 match r {
                     WorkerResult::Sat | WorkerResult::Unsat => { let _ = tx.send(r); },
-                    WorkerResult::Failed(ref e) => { log_info!("Spacer (portfolio) failed with {}", e); },
+                    WorkerResult::Failed(ref e) => { log_info!("Spacer failed: {}", e); },
                 }
             });
         }
@@ -238,16 +231,12 @@ where
         drop(tx);
 
         let result = rx.recv().ok();
-
-        // Signal every remaining solver process group; threads unblock immediately.
         cancel.cancel();
-
         result
     });
 
-    let eldarica_error = eldarica_errored.load(Ordering::SeqCst);
     Ok(match result {
         Some(WorkerResult::Sat) => either::Left(()),
-        _ => either::Right((hyper_res::ResolutionProof::new(), eldarica_error)),
+        _ => either::Right((hyper_res::ResolutionProof::new(), false)),
     })
 }
