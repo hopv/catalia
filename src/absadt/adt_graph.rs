@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::conf;
+use crate::absadt::enc::SimplificationKind;
 use crate::term;
 use crate::typ;
 use crate::VarMap;
@@ -13,17 +14,64 @@ pub enum Category {
     Static, Dynamic
 }
 
+/// Struct to manage all the type dependencies.
+///
+/// It introduces the concept of *statically simplifiable* and *dynamically
+/// simplifiable* for a given type.
+/// # Definitions
+/// ## Statically simplifiable
+/// An ADT is said statically simplifiable when it is not recursive and the
+/// only dependencies are:
+/// - None or
+/// - A SMT primitive type (Int) or
+/// - Another statically simplifiable ADT
+///
+/// Its approximation is fixed before the CEGAR loop and remains the same
+/// throughout the whole execution.
+/// ## Dynamically simplifiable
+/// An ADT is said dynamically simplifiable:
+/// - There is no loop (even with size > 1) into itself and
+/// - It is not statically simplifiable
+///
+/// If an ADT is *dynamically simplifiable* then its approximation degree and
+/// its arguments are adjusted during the CEGAR loop according to the dependency
+/// approximation degree.
+/// # Examples
+/// ## Statically simplifiable
+/// ```text
+/// (declare-datatypes
+///  ( (Color 0) )
+///  ( ( (Red (red Int)) (Green (green Int)) (Blue) (Yellow) ) ))
+/// ```
+/// Is statically simplified to:
+/// ```text
+/// Red(red: Int)     -> (1, red)
+/// Green(green: Int) -> (2, green)
+/// Blue              -> (3, 0)
+/// Yellow            -> (4, 0)
+/// ```
+/// ## Dynamically simplifiable
+/// ```text
+/// (declare-datatypes
+///  ( (List 0) )
+///  ( ( Nil (Cons (head Int) (tail List)) ) ))
+/// (declare-datatypes
+///  ( (Tuple 0) )
+///  ( ( (TupColor (first List) (second Color)) ) ))
+/// ```
+/// Is dynamically simplified to:
+/// ```text
+/// TupColor (first, second_1, second_2) -> (first, second_1, second_2)
+/// ```
+/// If the approximation degree for `List` was 2 then, the simplification for
+/// `Tuple` would have been:
+/// ```text
+/// TupColor (first_1, first_2, second_1, second_2) -> (first_1, first_2, second_1, second_2)
+/// ```
 #[derive(Default)]
 pub struct ADTDependencyGraph {
     dependencies: BTreeMap<Typ, BTreeSet<Typ>>,
-    // An ADT is said statically simplifiable when it is not recursive and the
-    // only dependencies are:
-    // - None or
-    // - A SMT primitive type (Int) or
-    // - Another statically simplifiable ADT
     statically_simplifiable: BTreeSet<Typ>,
-    // An ADT is said dynamically simplifiable when there is no loop (any loop size)
-    // into itself and it is not statically simplifiable
     dynamically_simplifiable: BTreeSet<Typ>,
     initial_approx_degrees: BTreeMap<RTyp, usize>,
 }
@@ -35,14 +83,14 @@ impl ADTDependencyGraph {
 
         for adt_rtyp in all_adts.iter() {
             if adt_rtyp.dtyp_inspect().is_some() {
-                dependencies.insert(adt_rtyp.clone(), adt_rtyp.dtyp_dependencies(&all_adts)?);
+                dependencies.insert(adt_rtyp.clone(), adt_rtyp.dtyp_typs_in_news()?);
             }
         }
 
         let statically_simplifiable = Self::init_statically_simplifiable(&dependencies);
         let dynamically_simplifiable =
             Self::init_dynamically_simplifiable(&dependencies, &statically_simplifiable);
-        let initial_approx_degrees = Self::init_approx_degrees(&all_adts);
+        let initial_approx_degrees = Self::init_approx_degrees(&all_adts)?;
 
         Ok(Self {
             dependencies,
@@ -102,12 +150,12 @@ impl ADTDependencyGraph {
             .collect()
     }
 
-    fn init_approx_degrees(all_adt: &BTreeSet<Typ>) -> BTreeMap<RTyp, usize> {
+    fn init_approx_degrees(all_adt: &BTreeSet<Typ>) -> Res<BTreeMap<RTyp, usize>> {
         let mut degree_map = BTreeMap::new();
         for typ in all_adt.iter() {
-            typ.get().compute_approximation_degree(all_adt, &mut degree_map);
+            typ.get().compute_approximation_degree(&mut degree_map, 1)?;
         }
-        degree_map
+        Ok(degree_map)
     }
 
     fn get_simplifiable(&self, category_to_flatten: &Category) -> BTreeMap<Typ, usize> {
@@ -153,12 +201,13 @@ impl ADTDependencyGraph {
                 for (arg_name, arg_typ) in constructor_args.iter() {
                     if let Ok(argument_concrete_typ) = arg_typ.to_type(Some(parameter)) {
                         for idx in 0..*self.initial_approx_degrees.get(&argument_concrete_typ).unwrap_or(&1) {
-                            new_signature.push(VarInfo {
-                                name: format!("{arg_name}_{idx}",),
-                                typ: typ::int(),
-                                idx: new_signature.next_index(),
-                                active: true,
-                            });
+                            new_signature.push(
+                                VarInfo::new(
+                                    format!("{arg_name}_{idx}"),
+                                    typ::int(),
+                                    new_signature.next_index()
+                                )
+                            );
                         }
                     }
                     else{
@@ -178,12 +227,10 @@ impl ADTDependencyGraph {
         for (typ, approx_deg) in simplifiable.iter() {
             let enc = encs.get_mut(&typ).unwrap();
             enc.n_params = *approx_deg;
-            if matches!(category_to_flatten, Category::Dynamic) {
-                enc.dinamically_simplified = true;
-            }
-            else {
-                enc.statically_simplified = true;
-            }
+            enc.simplification = match category_to_flatten {
+                Category::Dynamic => SimplificationKind::DynamicApprox,
+                Category::Static => SimplificationKind::StaticApprox,
+            };
             let n_constr = enc.approxs.keys().len();
             let approximations = &mut enc.approxs;
             for (idx, (_, approx)) in approximations.iter_mut().enumerate() {
@@ -228,4 +275,60 @@ impl std::fmt::Display for ADTDependencyGraph {
         }
         write!(f, "}}",)
     }
+}
+
+#[test]
+fn test_static_adt_detection() {
+    use crate::dtyp::DTyp;
+    use crate::dtyp::PartialTyp;
+    use crate::dtyp::TPrmIdx;
+    use crate::dtyp::RDTyp;
+    use crate::parse::Pos;
+
+    let dummy_pos = Pos::default();
+    let param_0: TPrmIdx = 0.into();
+    let ptyp = PartialTyp::DTyp (
+        "List".into(), dummy_pos, vec![ PartialTyp::Param(param_0) ].into()
+    );
+    let mut boolean = RDTyp::new("Bool");
+    let _ = boolean.add_constructor("True", vec![]);
+    let _ = boolean.add_constructor("False", vec![]);
+    let boolean = typ::dtyp(DTyp::new(boolean), vec![].into());
+    let b_list = typ::dtyp(crate::dtyp::get("List").unwrap(), vec![boolean.clone()].into());
+    let mut adts_encs: BTreeMap<Typ, Encoder> = BTreeMap::new();
+    let fake_enc: Enc<Approx> = Enc { typ: typ::int(), n_params: 1, approxs: BTreeMap::new(), simplification: SimplificationKind::None };
+    adts_encs.insert(boolean.clone(), fake_enc.clone());
+    adts_encs.insert(b_list.clone(), fake_enc.clone());
+    let graph = ADTDependencyGraph::new(&adts_encs).unwrap();
+    let mut expected: BTreeSet<Typ> = BTreeSet::new();
+    expected.insert(boolean);
+    assert_eq!(graph.statically_simplifiable, expected);
+}
+
+#[test]
+fn test_dynamic_adt_detection() {
+    use crate::dtyp::DTyp;
+    use crate::dtyp::PartialTyp;
+    use crate::dtyp::TPrmIdx;
+    use crate::dtyp::RDTyp;
+    use crate::parse::Pos;
+
+    let dummy_pos = Pos::default();
+    let param_0: TPrmIdx = 0.into();
+    let ptyp = PartialTyp::DTyp (
+        "List".into(), dummy_pos, vec![ PartialTyp::Param(param_0) ].into()
+    );
+    let int_list = typ::dtyp(crate::dtyp::get("List").unwrap(), vec![typ::int()].into());
+
+    let mut tuple = RDTyp::new("Tuple");
+    let _ = tuple.add_constructor("tuple", vec![("first".to_string(), PartialTyp::Typ(int_list.clone())), ("second".to_string(), PartialTyp::Typ(int_list.clone()))]);
+    let tuple = typ::dtyp(DTyp::new(tuple), vec![].into());
+    let mut adts_encs: BTreeMap<Typ, Encoder> = BTreeMap::new();
+    let fake_enc: Enc<Approx> = Enc { typ: typ::int(), n_params: 1, approxs: BTreeMap::new(), simplification: SimplificationKind::None };
+    adts_encs.insert(int_list.clone(), fake_enc.clone());
+    adts_encs.insert(tuple.clone(), fake_enc.clone());
+    let graph = ADTDependencyGraph::new(&adts_encs).unwrap();
+    let mut expected: BTreeSet<Typ> = BTreeSet::new();
+    expected.insert(tuple);
+    assert_eq!(graph.dynamically_simplifiable, expected);
 }
