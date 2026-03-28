@@ -4,9 +4,11 @@
 //! unsat-core. This module is intended to be temporary; we should move the
 //! functionality to rsmt2 or some other place.
 
+use super::CancelGroup;
 use super::Instance as InstanceT;
 use crate::absadt::hyper_res;
 use crate::common::*;
+use command_group::CommandGroup;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
@@ -61,14 +63,15 @@ const OPTION_PORTFOLIO: [&str; 10] = [
 ];
 
 pub struct Spacer {
-    child: std::process::Child,
+    child: command_group::GroupChild,
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
 }
 
 impl Drop for Spacer {
     fn drop(&mut self) {
-        self.child.kill().unwrap();
+        let _ = self.child.kill();
+        let _ = self.child.wait(); // reap to prevent zombie
     }
 }
 
@@ -111,9 +114,9 @@ impl Spacer {
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Spacer {
             child,
@@ -193,11 +196,12 @@ where
 /// Run Spacer in portfolio mode: plain sat/unsat check without proof generation.
 /// Uses `OPTION_PORTFOLIO` (omits the four proof-correctness flags) so that
 /// Spacer can apply its full preprocessing transforms for better performance.
-pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+pub fn run_spacer_portfolio<I>(instance: &I, timeout: Option<usize>, encode_tag: bool, cancel: Option<&CancelGroup>) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut spacer = Spacer::new_portfolio()?;
+    if let Some(c) = cancel { c.register(spacer.child.id()); }
     if let Some(sec) = timeout {
         spacer.set_timeout(sec)?;
     }

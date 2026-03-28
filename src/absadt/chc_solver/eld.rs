@@ -1,15 +1,24 @@
+use super::CancelGroup;
 use super::Instance as InstanceT;
 use crate::absadt::eld_cex;
 use crate::absadt::hyper_res;
 use crate::common::*;
 use std::borrow::Cow;
 use std::io::BufReader;
+use command_group::CommandGroup;
 use std::process::{Command, Stdio};
 
 pub struct Eldarica {
-    child: std::process::Child,
-    stdin: std::process::ChildStdin,
+    child: command_group::GroupChild,
+    stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for Eldarica {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 const OPTION: [&str; 0] = [];
@@ -29,13 +38,13 @@ impl Eldarica {
             .args(args.iter().map(|s| s.as_ref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
         })
     }
@@ -46,33 +55,16 @@ impl Eldarica {
     where
         I: InstanceT,
     {
-        instance.dump_as_smt2(&mut self.stdin, "", encode_tag)?;
+        instance.dump_as_smt2(self.stdin.as_mut().expect("stdin already closed"), "", encode_tag)?;
         Ok(())
     }
 
-    fn check_sat(self) -> Res<bool> {
-        let Self {
-            stdin,
-            stdout,
-            mut child,
-            ..
-        } = self;
-        fn inner(
-            stdin: std::process::ChildStdin,
-            mut stdout: BufReader<std::process::ChildStdout>,
-        ) -> Res<String> {
-            stdin.discard();
+    fn check_sat(&mut self) -> Res<bool> {
+        // Close stdin to signal EOF to the child.
+        drop(self.stdin.take());
 
-            let mut line = String::new();
-            stdout.read_to_string(&mut line)?;
-            Ok(line)
-        }
-
-        let res = inner(stdin, stdout);
-        // kill child process before returning
-        child.kill().unwrap();
-
-        let line = res?;
+        let mut line = String::new();
+        self.stdout.read_to_string(&mut line)?;
 
         if line.starts_with("sat") {
             Ok(true)
@@ -84,35 +76,16 @@ impl Eldarica {
     }
 
     /// Check satisfiability and return counterexample if unsat
-    fn check_sat_with_cex(self) -> Res<either::Either<(), hyper_res::ResolutionProof>> {
-        let Self {
-            stdin,
-            stdout,
-            mut child,
-            ..
-        } = self;
+    fn check_sat_with_cex(&mut self) -> Res<either::Either<(), hyper_res::ResolutionProof>> {
+        // Close stdin to signal EOF to the child.
+        drop(self.stdin.take());
 
-        fn inner(
-            stdin: std::process::ChildStdin,
-            mut stdout: BufReader<std::process::ChildStdout>,
-        ) -> Res<String> {
-            stdin.discard();
-
-            let mut output = String::new();
-            stdout.read_to_string(&mut output)?;
-            Ok(output)
-        }
-
-        let res = inner(stdin, stdout);
-        // kill child process before returning
-        child.kill().unwrap();
-
-        let output = res?;
+        let mut output = String::new();
+        self.stdout.read_to_string(&mut output)?;
 
         if output.starts_with("sat") {
             Ok(either::Left(()))
         } else if output.starts_with("unsat") {
-            // Parse the counterexample
             let proof = eld_cex::parse_eldarica_cex(&output)?;
             Ok(either::Right(proof))
         } else {
@@ -121,11 +94,12 @@ impl Eldarica {
     }
 }
 
-pub fn run_eldarica<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+pub fn run_eldarica<I>(instance: &I, timeout: Option<usize>, encode_tag: bool, cancel: Option<&CancelGroup>) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut eld = Eldarica::new(timeout, false)?;
+    if let Some(c) = cancel { c.register(eld.child.id()); }
     eld.dump_instance(instance, encode_tag)?;
     eld.check_sat()
 }
