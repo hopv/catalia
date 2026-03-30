@@ -173,8 +173,7 @@ impl LlmProvider for OpenAiProvider {
         if !instructions.is_empty() {
             body["instructions"] = serde_json::Value::String(instructions);
         }
-        body["max_output_tokens"] = serde_json::Value::Number(1600.into());
-        body["reasoning"] = serde_json::json!({"effort":"low"}); // for development
+        body["max_output_tokens"] = serde_json::Value::Number(16384.into());
 
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(30))
@@ -272,7 +271,7 @@ impl LlmProvider for AnthropicProvider {
 
         let body = serde_json::json!({
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "system": system_text,
             "messages": msgs,
         });
@@ -334,142 +333,322 @@ fn create_provider() -> Res<Box<dyn LlmProvider>> {
 // ---------------------------------------------------------------------------
 
 fn build_system_prompt() -> String {
-    r#"You are an expert in program verification, abstract interpretation, and Horn clause solving.
+    r#"You are solving a **Constrained Horn Clause (CHC)** problem over **algebraic data types (ADTs)** and integer arithmetic. I want a **catamorphism-based solution** in the spirit of Katsura et al., *Automated Catamorphism Synthesis for Solving Constrained Horn Clauses over Algebraic Data Types*.
 
-Your task is to synthesize catamorphism encoders for algebraic data types (ADTs).
-A catamorphism maps each constructor of an ADT to a fixed-length tuple of integers.
-Each tuple component is defined as an SMT-LIB integer expression over the constructor's selector arguments.
+Your task is to analyze the given SMT-LIB HORN instance and do the following.
 
-A selector argument contributes parameters as follows:
+## What to produce
 
-- If the selector has type Int:
-  it contributes exactly ONE integer parameter (its value).
+1. Decide whether the CHCs are **SAT** or **UNSAT**.
+2. If **SAT**, produce:
+   - an **intuitive / intended model** for the predicates if possible,
+   - a suitable **catamorphism** from each relevant ADT to integers or tuples of integers,
+   - the corresponding **range / admissibility predicate** for the image of the catamorphism,
+   - an **abstract integer-domain model** for the predicates after applying the catamorphism,
+   - the induced **original ADT-domain model** obtained by lifting back through the catamorphism.
+3. If **UNSAT**, explain the contradiction in the **original CHCs**, not only in the abstraction.
 
-- If the selector has ADT type T, and T is encoded as an N-component tuple:
-  it contributes exactly N integer parameters, representing the recursive encoding result.
+---
 
-Parameters appear in the SAME ORDER as selector declarations, and recursive components appear in tuple order.
+## High-level overview of the paper's approach / pipeline
 
-Your objective is to produce a sound and simple structural encoding. Prefer the smallest number of components sufficient to represent structural measures (for example length, size, sum, or similar).
+The core problem is that CHCs over ADTs often require models that are naturally stated using inductive functions such as list length, list sum, alternating sum, or numeric value of Peano naturals. Standard CHC solvers are often much better at solving CHCs over **integers** than over ADTs directly.
 
-------------------------------------------------------------
-OUTPUT FORMAT (STRICT)
-------------------------------------------------------------
+The paper's key idea is therefore:
 
-Produce EXACTLY ONE s-expression block.
-Do NOT include explanations, comments, markdown, or any extra text.
+1. **Choose a catamorphism** `C` from the ADT to integers or tuples of integers.
+   - A catamorphism is a fold-like summary map defined by one structure map per constructor.
+   - Example patterns:
+     - `Nat`: `Z -> 0`, `S(x) -> x + 1`
+     - `List`: `nil -> 0`, `cons(x,l) -> 1 + l` (length)
+     - `List`: `nil -> 0`, `cons(x,l) -> x + l` (sum)
+     - `List`: `nil -> 0`, `cons(x,l) -> x - l` (alternating sum)
+     - tuple-valued folds when one scalar is insufficient.
 
-The structure must be:
+2. **Augment the original CHCs with an admissibility predicate** `P_delta` for each ADT sort.
+   - This predicate represents "being in the image / being a valid abstractable value".
+   - This matters because abstraction without range restrictions is often too coarse and can introduce spurious counterexamples.
+   - In the abstract system, every universally quantified ADT variable is replaced by an integer variable together with a condition such as `P_delta(x)`.
 
+3. **Abstract the CHCs into integer CHCs** by replacing each constructor application with the corresponding structure map of the catamorphism.
+   - ADT equality is abstracted soundly by equality of catamorphism images.
+   - The result is a CHC system over integer arithmetic, often much easier to solve.
+
+4. **Solve the abstract CHCs**.
+   - If the abstract system is SAT, then by soundness the original CHCs are SAT.
+   - A model for the original predicates can be obtained by composing the abstract model with the catamorphism.
+
+5. **If the abstract system is UNSAT**, check whether the UNSAT proof corresponds to a real contradiction in the original CHCs.
+   - Extract a candidate counterexample / proof obligation from the abstract UNSAT derivation.
+   - If that counterexample is genuinely satisfiable in the original ADT world, conclude **UNSAT**.
+   - Otherwise it is **spurious**, meaning the current catamorphism was too weak.
+
+6. **Refine the catamorphism**.
+   - Search for a better catamorphism using templates, usually linear or affine folds first.
+   - The paper uses a **counterexample-guided template synthesis** loop:
+     - abstract,
+     - solve,
+     - extract spurious counterexample if needed,
+     - strengthen the catamorphism so the same spurious proof becomes impossible,
+     - repeat.
+
+7. **Prefer simple catamorphisms first**, then richer tuple-valued ones if needed.
+   - The paper uses a sequence of templates of increasing expressiveness.
+   - In practice, many examples are solved by a small scalar or 2D/3D fold.
+
+In short, the pipeline is:
+
+**guess / synthesize fold -> add range predicate -> abstract to integer CHCs -> solve -> if spurious UNSAT, refine fold -> otherwise lift model back**.
+
+---
+
+## Key ideas you should actively use while solving
+
+Follow the methodology below, not just generic CHC reasoning.
+
+### A. First infer the semantic role of each predicate
+
+Try to understand what each predicate is tracking:
+- arithmetic relation between arguments,
+- structural size,
+- length of a list,
+- sum of elements,
+- alternating sum,
+- parity,
+- relation between two accumulators,
+- generated family of ADT values,
+- safety property in the final `false` clause.
+
+Many CHC predicates correspond to a fold-derived invariant.
+
+### B. Prefer simple folds first
+
+Start with simple, interpretable catamorphisms:
+- natural numbers -> numeric value / size,
+- lists -> length,
+- lists -> sum,
+- lists -> alternating sum,
+- tuples such as `(length, sum)`, `(sum_even_minus_odd, length)`, etc.
+
+If one scalar summary is not enough, try a **tuple-valued catamorphism**.
+
+### C. Use linear / affine templates first
+
+A very common successful pattern is a linear catamorphism:
+- `C(nil) = d`
+- `C(cons(x,l)) = a*C(l) + b*x + c`
+
+or tuple combinations of these.
+
+For naturals:
+- `C(Z) = a`
+- `C(S(n)) = b*C(n) + c`
+
+Try low-complexity coefficients first.
+
+### D. Always think about the range predicate
+
+Do **not** forget the image restriction / admissibility predicate.
+
+Without it, the abstraction may be too coarse and may yield false contradictions or incorrect arithmetic states that no concrete ADT term can realize.
+
+When the image is all integers, the range predicate may simplify to `true`; when the image is restricted, spell that out explicitly.
+
+### E. Clause-by-clause validation matters
+
+Once you propose a catamorphism and abstract model, check **every Horn clause** carefully.
+
+For SAT cases, verify that each abstract clause is satisfied by your abstract predicate definitions.
+
+For UNSAT cases, identify the concrete contradiction in the original clauses.
+
+### F. Lift the abstract model back explicitly
+
+If the abstract model defines e.g.
+- `P_abs(u,v,w) := u + v = w`
+
+and the ADT arguments are abstracted by `C`, then the original model should be written as
+- `P(x,y,z) := P_abs(C(x), C(y), C(z))`
+
+or equivalently with `C(x), C(y), ...` substituted directly.
+
+---
+
+## Heuristics that often work on these tasks
+
+Use these aggressively.
+
+- For Peano naturals, the right catamorphism is often simply the numeric value / size.
+- For list-processing CHCs, the hidden invariant is often one of:
+  - length,
+  - sum,
+  - alternating sum,
+  - parity,
+  - a pair/triple of such measures.
+- Generator predicates often characterize a family of ADTs with a very simple abstract image.
+- Safety clauses often directly reveal the needed invariant:
+  - `false <- ...` frequently says exactly what arithmetic relation must hold.
+- Recurrences like
+  - `P(cons(x,l), x+n, m) <- P(l, m, n)`
+  often suggest alternating-sum or accumulator-swap structure.
+- If the abstraction becomes UNSAT too early, suspect that the catamorphism is too weak rather than the original problem being UNSAT.
+- Equality on ADTs becomes equality of summaries only as a **sound abstraction**; do not silently treat it as full equivalence.
+
+---
+
+## Important requirement: output the catamorphism in Catalia-readable format
+
+When you present the catamorphism, you MUST wrap it between the markers `<<START-CATA>>` and `<<END-CATA>>`.
+
+The catamorphism must be a valid s-expression in the following format:
+
+- The whole catamorphism is a list of ADT-sort entries.
+- Each ADT-sort entry has the form:
+  - `( "SortName" ...constructor-entries... )`
+- Each constructor entry has the form:
+  - `( "CtorName" ( (arg1 arg2 ...) body1 body2 ... ) )`
+- The argument list contains:
+  - first, ordinary non-recursive constructor arguments (one parameter per Int selector),
+  - then, for recursive ADT arguments, the already-catamorphically-mapped components (N parameters per recursive selector, where N is the encoding dimension of that ADT).
+- A scalar catamorphism returns one body expression.
+- A tuple-valued catamorphism returns multiple body expressions, one per component.
+- Parameters appear in the SAME ORDER as selector declarations.
+- Constructors with no selectors MUST use an empty parameter list: `()`
+- All result expressions MUST be integer-valued SMT-LIB expressions.
+- Use ONLY: `(+ a b)`, `(- a b)`, `(* a b)`, `(ite cond then else)`, `(= a b)`, `(>= a b)`, `(> a b)`, `(<= a b)`, `(< a b)`, `(and ...)`, `(or ...)`, `(not ...)`.
+- Do NOT use division, quantifiers, let bindings, or uninterpreted functions.
+- You may include `;; ...` comments inside the block for clarity.
+
+### Catamorphism example 1
+
+<<START-CATA>>
 (
-  ("DatatypeName1"
-    ("Constructor1"
-      ((param1 param2 ...) expr1 expr2 ...)
+  ;; Bool_265 |-> (0/1)
+  ( "Bool_265"
+    ( "false_265"
+      ( ()
+        0
+      )
     )
-    ("Constructor2"
-      ((param1 param2 ...) expr1 expr2 ...)
-    )
-    ...
-  )
-  ("DatatypeName2"
-    ("Constructor1"
-      ((param1 ...) expr1 ...)
-    )
-    ...
-  )
-)
-
-IMPORTANT: each constructor body is wrapped in an EXTRA pair of parentheses.
-The inner list contains FIRST the parameter list, then the result expressions.
-("ConstructorName" ((params...) expr1 expr2 ...))
-                   ^                             ^
-                   extra outer parens around the entire body
-
-------------------------------------------------------------
-MANDATORY RULES
-------------------------------------------------------------
-
-1. Include EVERY datatype listed in the Required Datatypes section.
-2. Include EVERY constructor of each datatype.
-3. Every constructor of the SAME datatype MUST produce the SAME number of result expressions.
-4. This number defines the encoding dimension of that datatype.
-5. Parameter lists MUST contain exactly one parameter per Int selector and exactly N parameters per recursive selector, where N is the encoding dimension of that recursive datatype.
-6. Constructors with no selectors MUST use an empty parameter list: ()
-7. All result expressions MUST be integer expressions.
-8. Use ONLY SMT-LIB syntax:
-
-   (+ a b)
-   (- a b)
-   (* a b)
-   (ite cond then else)
-   (= a b)
-   (>= a b)
-   (> a b)
-   (<= a b)
-   (< a b)
-   (and ...)
-   (or ...)
-   (not ...)
-
-9. Do NOT use division, quantifiers, let bindings, or uninterpreted functions.
-10. Parameter names must be simple ASCII identifiers (example: x, y, l0, l1, r0).
-11. The entire output must be wrapped in ONE outer parenthesized list.
-
-------------------------------------------------------------
-PARAMETER ORDERING EXAMPLE
-------------------------------------------------------------
-
-Datatype:
-
-  cons(head:Int, tail:List)
-
-If List has a 2-component encoding, the parameters are:
-
-  (head tail_0 tail_1)
-
-NOT:
-
-  (head tail)
-
-------------------------------------------------------------
-EXAMPLE: length encoding
-------------------------------------------------------------
-
-(
-  ("IList"
-    ("nil"
-      (() 0)
-    )
-    ("cons"
-      ((x t) (+ t 1))
+    ( "true_265"
+      ( ()
+        1
+      )
     )
   )
-)
 
-------------------------------------------------------------
-EXAMPLE: length and sum encoding
-------------------------------------------------------------
-
-(
-  ("IList"
-    ("nil"
-      (() 0 0)
+  ;; list_194 |-> (ok, first, emp)
+  ( "list_194"
+    ( "cons_194"
+      ( (x ok first emp)
+        (* ok (ite (= emp 1) 1 (ite (<= x first) 1 0)))
+        x
+        0
+      )
     )
-    ("cons"
-      ((x t_len t_sum)
-        (+ t_len 1)
-        (+ t_sum x)
+    ( "nil_220"
+      ( ()
+        1
+        0
+        1
+      )
+    )
+  )
+
+  ;; pair_82 |-> (b, ok, first, emp)
+  ( "pair_82"
+    ( "pair_83"
+      ( (b ok first emp)
+        b
+        ok
+        first
+        emp
       )
     )
   )
 )
+<<END-CATA>>
 
-------------------------------------------------------------
-CRITICAL
-------------------------------------------------------------
+### Catamorphism example 2
 
-Output ONLY the s-expression.
-Any additional text is invalid.
+<<START-CATA>>
+(
+  ( "Nat_0"
+    ( "S_0"
+      ( (x)
+        (+ x 1)
+      )
+    )
+    ( "Z_0"
+      ( ()
+        0
+      )
+    )
+  )
+
+  ;; list_0 |-> int (length)
+  ( "list_0"
+    ( "cons_0"
+      ( (x y)
+        (+ y 1)
+      )
+    )
+    ( "nil_0"
+      ( ()
+        0
+      )
+    )
+  )
+)
+<<END-CATA>>
+
+You MUST include EVERY datatype and EVERY constructor listed in the Required Datatypes section.
+All constructors of the SAME datatype MUST produce the SAME number of result expressions.
+The catamorphism block between the markers is the ONLY part that will be parsed by the tool.
+You are free to explain your reasoning, analysis, and model outside of the markers.
+
+---
+
+## Required output format
+
+Use exactly this structure.
+
+### 1. Verdict
+State `SAT` or `UNSAT`.
+
+### 2. High-level idea
+Briefly explain the invariant and why a catamorphism is appropriate.
+
+### 3. Chosen catamorphism
+Define the catamorphism precisely for each constructor.
+Include the **Catalia-style catamorphism block** wrapped in `<<START-CATA>>` / `<<END-CATA>>` markers.
+If tuple-valued, clearly name each component.
+
+### 4. Range / admissibility predicate
+Define the image predicate `P_delta`.
+If it simplifies to `true`, say so and justify briefly.
+
+### 5. Abstract model
+Give explicit definitions of the predicates in the abstract integer domain.
+
+### 6. Clause check
+Check each Horn clause against the abstract model.
+
+### 7. Lifted original model
+Translate the abstract model back to the original ADT domain via the catamorphism.
+
+### 8. If UNSAT
+If the verdict is `UNSAT`, explain the contradiction in the original CHCs.
+
+---
+
+## Additional instructions
+
+- Be mathematically explicit.
+- Do not give only intuition; give actual formulas.
+- If one catamorphism fails, refine it rather than giving up.
+- If the intended model is recursive but the non-recursive one is easier to verify, provide both.
+- Prefer concise but rigorous reasoning.
 "#.to_string()
 }
 
@@ -524,8 +703,8 @@ fn build_chc_context(instance: &AbsInstance, encs: &BTreeMap<Typ, Encoder>) -> S
 
     format!(
         "{}\n\n## CHC Problem (SMT-LIB format)\n\n```smt2\n{}\n```\n\n## Current Encoders\n\n```\n{}\n```\n\n\
-The current encoders are insufficient. Please propose better encoders that can help \
-distinguish the spurious counterexample from real ones.",
+The current encoders are insufficient and produce spurious counterexamples. \
+Analyze the CHC problem and propose a catamorphism that captures the essential invariant.",
         build_required_datatypes(encs),
         chc_str, enc_str
     )
@@ -559,17 +738,72 @@ First few chars: `{}`\n\nPlease try a different encoding strategy.",
 // Response parsing
 // ---------------------------------------------------------------------------
 
-/// Extract the outermost s-expression from an LLM response, stripping markdown fences
+const CATA_START_MARKER: &str = "<<START-CATA>>";
+const CATA_END_MARKER: &str = "<<END-CATA>>";
+
+/// Extract the catamorphism s-expression from an LLM response.
+///
+/// First looks for `<<START-CATA>>` / `<<END-CATA>>` markers. If found, extracts the
+/// content between them and finds the outermost balanced s-expression within.
+/// Falls back to the legacy behaviour of finding the first balanced s-expression
+/// in the full response (after stripping markdown fences).
 fn extract_sexp(response: &str) -> Option<String> {
+    // Try marker-based extraction first
+    if let Some(sexp) = extract_sexp_from_markers(response) {
+        return Some(sexp);
+    }
+
+    // Fallback: strip markdown fences and find first balanced s-expression
     let text = strip_markdown_fences(response);
+    extract_first_balanced_sexp(&text)
+}
+
+/// Extract catamorphism from between <<START-CATA>> and <<END-CATA>> markers.
+fn extract_sexp_from_markers(response: &str) -> Option<String> {
+    let start_idx = response.find(CATA_START_MARKER)?;
+    let after_start = start_idx + CATA_START_MARKER.len();
+    let end_idx = response[after_start..].find(CATA_END_MARKER)?;
+    let between = &response[after_start..after_start + end_idx];
+
+    // Strip comments (lines starting with ;;) are fine for lexpr, but strip
+    // markdown fences that might appear inside the marker block
+    let cleaned = strip_markdown_fences(between);
+    extract_first_balanced_sexp(&cleaned)
+}
+
+/// Find the first balanced parenthesized s-expression in the given text.
+fn extract_first_balanced_sexp(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
 
     // find first '('
     let start = bytes.iter().position(|&b| b == b'(')?;
 
     let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut in_comment = false;
     for (i, &b) in bytes[start..].iter().enumerate() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if in_comment {
+            if b == b'\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if in_string {
+            match b {
+                b'\\' => escape_next = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
         match b {
+            b';' => in_comment = true,
+            b'"' => in_string = true,
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
@@ -865,7 +1099,8 @@ pub fn work(
                     role: "user".into(),
                     content: format!(
                         "Your response could not be parsed: {}. \
-Please produce a valid s-expression in the exact format described.",
+Please ensure the catamorphism s-expression is wrapped between <<START-CATA>> and <<END-CATA>> markers \
+in the exact format described.",
                         e
                     ),
                 });
@@ -1167,5 +1402,122 @@ This encodes the length of the list."#;
         let encs = make_list_encs();
         let result = parse_llm_response("sorry, I cannot help with that", &encs);
         assert!(result.is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Marker-based extraction tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_sexp_with_markers() {
+        let input = r#"### 1. Verdict
+SAT
+
+### 3. Chosen catamorphism
+The list length is sufficient.
+
+<<START-CATA>>
+(("IList"
+  ("nil" (() 0))
+  ("insert" ((x l) (+ l 1)))
+))
+<<END-CATA>>
+
+### 5. Abstract model
+P(l) := l >= 0
+"#;
+        let result = extract_sexp(input).unwrap();
+        assert!(result.contains("IList"));
+        assert!(result.contains("insert"));
+        // Should NOT grab the surrounding text
+        assert!(!result.contains("Verdict"));
+    }
+
+    #[test]
+    fn test_extract_sexp_markers_with_comments() {
+        let input = r#"Some reasoning here.
+
+<<START-CATA>>
+(
+  ;; list_0 |-> int (length)
+  ( "List"
+    ( "nil"
+      ( ()
+        0
+      )
+    )
+    ( "insert"
+      ( (x t)
+        (+ t 1)
+      )
+    )
+  )
+)
+<<END-CATA>>
+
+More text here."#;
+        let result = extract_sexp(input).unwrap();
+        assert!(result.contains("List"));
+        assert!(result.contains("insert"));
+    }
+
+    #[test]
+    fn test_extract_sexp_markers_with_markdown_inside() {
+        let input = r#"<<START-CATA>>
+```lisp
+(("List"
+  ("nil" (() 0))
+  ("insert" ((x l) (+ l 1)))
+))
+```
+<<END-CATA>>"#;
+        let result = extract_sexp(input).unwrap();
+        assert!(result.contains("List"));
+    }
+
+    #[test]
+    fn test_extract_sexp_prefers_markers_over_earlier_sexp() {
+        // There's an s-expression before the markers (in the reasoning),
+        // but we should extract from the markers.
+        let input = r#"The predicate P(x) := (>= x 0) is a candidate.
+
+<<START-CATA>>
+(("List"
+  ("nil" (() 0))
+  ("insert" ((x l) (+ l 1)))
+))
+<<END-CATA>>"#;
+        let result = extract_sexp(input).unwrap();
+        // Should get the List encoding, not (>= x 0)
+        assert!(result.contains("List"));
+    }
+
+    #[test]
+    fn test_parse_llm_response_with_markers() {
+        let response = r#"### 1. Verdict
+SAT
+
+### 3. Chosen catamorphism
+
+<<START-CATA>>
+(
+  ("List"
+    ("nil"
+      (() 0)
+    )
+    ("insert"
+      ((head tail) (+ tail 1))
+    )
+  )
+)
+<<END-CATA>>
+
+### 5. Abstract model
+..."#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let enc = result.unwrap().into_values().next().unwrap();
+        assert_eq!(enc.n_params, 1);
     }
 }
