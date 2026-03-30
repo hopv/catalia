@@ -2,6 +2,7 @@ use super::chc::CEX;
 use super::enc::*;
 use crate::common::{smt::FullParser as Parser, Cex as Model, *};
 use crate::info::VarInfo;
+use crate::term::typ::RTyp;
 
 const CONSTRAINT_CHECK_TIMEOUT: usize = 1;
 const THRESHOLD_BLASTING: usize = 10;
@@ -561,7 +562,7 @@ impl LinearApprox {
 }
 
 trait SimplifiedApproximation {
-    fn shift_index(new_args: &VarInfos, old_args: &VarInfos, old_terms: &Vec<Term>) -> Vec<Term> {
+    fn shift_body_indices(new_args: &VarInfos, old_args: &VarInfos, old_terms:  &Vec<Term>) -> Vec<Term> {
         let mut new_terms = Vec::new();
         for term in old_terms.iter() {
             match term.get() {
@@ -634,7 +635,7 @@ impl StaticApprox {
             Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
             let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
             let terms =
-                Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+                Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
             new_approxs.insert(
                 constr_name.clone(),
                 Template::StaticSimplification(Self {
@@ -687,7 +688,7 @@ impl DynamicApprox {
             Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
             let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
             let terms =
-                Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+                Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
             new_approxs.insert(
                 constr_name.clone(),
                 Template::DynamicSimplification(Self {

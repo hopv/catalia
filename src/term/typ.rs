@@ -256,50 +256,50 @@ impl RTyp {
         &self,
         system_adts: &BTreeSet<Typ>,
         cache: &mut BTreeMap<Self, usize>,
-    ) {
+    ) -> Res<()> {
         if cache.contains_key(self) {
-            return;
+            return Ok(());
         }
 
-        if self.is_recursive(system_adts).is_ok_and(|v| v) {
-            cache.insert(self.clone(), 1);
-            return;
+        let approx_degree = if self.is_recursive(system_adts).is_ok_and(|v| v) {
+            1
         }
-
-        let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() else {
-            cache.insert(self.clone(), 1);
-            return;
+        else if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            let constructor_degree = dtyp
+                .news
+                .iter()
+                .map(|(_, args)| {
+                    args.iter()
+                        .map(|(_, arg_ptyp)| arg_ptyp.degree_of_arg(generic_rtyps, system_adts, cache))
+                        .sum::<Res<usize>>()
+                })
+                .collect::<Res<Vec<usize>>>()?
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+                                 // Constructors discriminator
+            constructor_degree + usize::from(dtyp.news.len() > 1)
+        } else {
+            1
         };
 
-        let constructor_degree = dtyp
-            .news
-            .iter()
-            .map(|(_, args)| {
-                args.iter()
-                    .map(|(_, arg_ptyp)| arg_ptyp.degree_of_arg(generic_rtyps, system_adts, cache))
-                    .sum::<usize>()
-            })
-            .max()
-            .unwrap_or(0);
+        cache.insert(self.clone(), approx_degree);
 
-        // Need one extra digit to discriminate between multiple constructors.
-        let discriminant_bit = if dtyp.news.len() > 1 { 1 } else { 0 };
-
-        cache.insert(self.clone(), constructor_degree + discriminant_bit);
+        Ok(())
     }
 
     /// Ensures [`RTtyp`] has an entry in `cache`, recursing if necessary.
-    pub(crate) fn ensure_cached(&self, system_adts: &BTreeSet<Typ>, cache: &mut BTreeMap<RTyp, usize>) {
-        if cache.contains_key(self) {
-            return;
+    pub(crate) fn ensure_cached(&self, system_adts: &BTreeSet<Typ>, cache: &mut BTreeMap<RTyp, usize>) -> Res<()> {
+        if !cache.contains_key(self) {
+            if self.is_recursive(system_adts).is_ok_and(|v| v) {
+                cache.insert(self.clone(), 1);
+            } else {
+                self.compute_approximation_degree(system_adts, cache)?;
+            }
         }
-        else if self.is_recursive(system_adts).is_ok_and(|v| v) {
-        cache.insert(self.clone(), 1);
-    } else {
-        self.compute_approximation_degree(system_adts, cache);
+        Ok(())
     }
-}
-
+    
     /// Checks a type is legal.
     pub fn check(&self) -> Res<()> {
         match self {

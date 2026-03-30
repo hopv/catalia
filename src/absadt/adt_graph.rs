@@ -42,7 +42,7 @@ impl ADTDependencyGraph {
         let statically_simplifiable = Self::init_statically_simplifiable(&dependencies);
         let dynamically_simplifiable =
             Self::init_dynamically_simplifiable(&dependencies, &statically_simplifiable);
-        let initial_approx_degrees = Self::init_approx_degrees(&all_adts);
+        let initial_approx_degrees = Self::init_approx_degrees(&all_adts)?;
 
         Ok(Self {
             dependencies,
@@ -102,12 +102,12 @@ impl ADTDependencyGraph {
             .collect()
     }
 
-    fn init_approx_degrees(all_adt: &BTreeSet<Typ>) -> BTreeMap<RTyp, usize> {
+    fn init_approx_degrees(all_adt: &BTreeSet<Typ>) -> Res<BTreeMap<RTyp, usize>> {
         let mut degree_map = BTreeMap::new();
         for typ in all_adt.iter() {
-            typ.get().compute_approximation_degree(all_adt, &mut degree_map);
+            typ.get().compute_approximation_degree(all_adt, &mut degree_map)?;
         }
-        degree_map
+        Ok(degree_map)
     }
 
     fn get_simplifiable(&self, category_to_flatten: &Category) -> BTreeMap<Typ, usize> {

@@ -165,31 +165,35 @@ impl PartialTyp {
         generic_rtyps: &TPrmMap<Typ>,
         system_adts: &BTreeSet<Typ>,
         cache: &mut BTreeMap<typ::RTyp, usize>,
-    ) -> usize {
+    ) -> Res<usize> {
         match self {
-        PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
-            typ::RTyp::Int => 1,
-            typ::RTyp::DTyp { .. } => {
-                arg_rtyp.ensure_cached(system_adts, cache);
-                *cache.get(arg_rtyp.get()).unwrap_or(&0)
-            }
-            _ => 0,
-        },
+            PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
+                typ::RTyp::Int => Ok(1),
+                typ::RTyp::DTyp { .. } => {
+                    arg_rtyp.ensure_cached(system_adts, cache);
+                    Ok(*cache.get(arg_rtyp.get()).unwrap_or(&0))
+                }
+                _ => Err(Error::from_kind(ErrorKind::Msg(format!(
+                    "{self} is not an integer or a Datatype"
+                )))),
+            },
             PartialTyp::DTyp(_, _, _) => {
                 match self.to_type(Some(generic_rtyps)) {
                     Ok(arg_rtyp) => {
                         arg_rtyp.ensure_cached(system_adts, cache);
-                    *cache.get(&arg_rtyp).unwrap_or(&0)
+                    Ok(*cache.get(&arg_rtyp).unwrap_or(&0))
                     }
-                    Err(_) => 1,
+                    Err((_, msg)) =>  Err(Error::from_kind(ErrorKind::Msg(msg))),
                 }
             }
             PartialTyp::Param(idx) => {
                 let param_rtyp = generic_rtyps[*idx].get();
                 param_rtyp.ensure_cached(system_adts, cache);
-                *cache.get(param_rtyp).unwrap_or(&0)
+                Ok(*cache.get(param_rtyp).unwrap_or(&0))
             }
-            _ => 0,
+            _ => Err(Error::from_kind(ErrorKind::Msg(format!(
+                "{self} partial type not supported"
+            )))),
         }
     }
 }
