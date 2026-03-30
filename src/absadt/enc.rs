@@ -134,7 +134,7 @@ pub struct Enc<Approx> {
     pub n_params: usize,
     pub approxs: BTreeMap<String, Approx>,
     pub statically_simplified: bool,
-    pub dinamically_simplified: bool,
+    pub dynamically_simplified: bool,
 }
 
 impl<Approx: std::fmt::Display> std::fmt::Display for Enc<Approx> {
@@ -194,7 +194,7 @@ impl<A: Approximation> Enc<A> {
             n_params: 1,
             approxs,
             statically_simplified: false,
-            dinamically_simplified: false,
+            dynamically_simplified: false,
         }
     }
     fn get_ith_enc_rdf_name(&self, i: usize) -> String {

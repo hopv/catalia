@@ -29,17 +29,17 @@ impl TemplateInfo {
         Ok(())
     }
 
-    fn is_used_in_semplified_enc(&self, var_info: &VarInfo) -> bool {
+    fn is_used_in_simplified_enc(&self, var_info: &VarInfo) -> bool {
         for (_, enc) in self.encs.iter() {
             for (_, approx) in enc.approxs.iter() {
                 match approx {
                     Template::Linear(_) => {},
-                    Template::StaticSemplification(static_approx) => {
+                    Template::StaticSimplification(static_approx) => {
                         if static_approx.approx.args.contains(var_info) {
                             return true;
                         }
                     }
-                    Template::Dynamicemplification(dyn_approx) =>{
+                    Template::DynamicSimplification(dyn_approx) =>{
                         if dyn_approx.approx.args.contains(var_info) {
                             return true;
                         }
@@ -52,7 +52,7 @@ impl TemplateInfo {
 
     /// Define paramter constants
     fn define_parameters(&self, solver: &mut Solver<Parser>) -> Res<()> {
-        for var in self.parameters.iter().filter(|var_info| !self.is_used_in_semplified_enc(var_info)) {
+        for var in self.parameters.iter().filter(|var_info| !self.is_used_in_simplified_enc(var_info)) {
             solver.declare_const(&format!("v_{}", var.idx), &var.typ.to_string())?;
         }
         Ok(())
@@ -73,11 +73,11 @@ impl TemplateInfo {
             let mut approxs = BTreeMap::new();
             if old_enc.statically_simplified {
                 StaticApprox::new(&mut approxs, &mut variables, &old_enc);
-            } else if old_enc.dinamically_simplified {
+            } else if old_enc.dynamically_simplified {
                 DynamicApprox::new(&mut approxs, &mut variables, &old_enc);
             }
             else {
-                Self::linear_apporx(
+                Self::linear_approx(
                     &mut approxs,
                     &mut variables,
                     typ,
@@ -89,8 +89,8 @@ impl TemplateInfo {
                 );
             }
             let statically_simplified = encs.get(typ).unwrap().statically_simplified;
-            let dinamically_simplified = encs.get(typ).unwrap().dinamically_simplified;
-            let n_params = if statically_simplified || dinamically_simplified {
+            let dynamically_simplified = encs.get(typ).unwrap().dynamically_simplified;
+            let n_params = if statically_simplified || dynamically_simplified {
                 old_enc.n_params
             } else {
                 n_encs
@@ -100,7 +100,7 @@ impl TemplateInfo {
                 typ: typ.clone(),
                 n_params,
                 statically_simplified,
-                dinamically_simplified,
+                dynamically_simplified,
             };
             new_encs.insert(typ.clone(), enc);
         }
@@ -111,7 +111,7 @@ impl TemplateInfo {
         }
     }
 
-    fn linear_apporx(
+    fn linear_approx(
         approxs: &mut BTreeMap<String, Template>,
         mut variables: &mut VarInfos,
         typ: &Typ,
@@ -132,7 +132,7 @@ impl TemplateInfo {
                 let is_recursive = encs.get(&ty).is_some();
                 let n_arg = if is_recursive {
                     if encs.get(&ty).is_some_and(
-                        |v| v.statically_simplified || v.dinamically_simplified
+                        |v| v.statically_simplified || v.dynamically_simplified
                     ) {
                         encs.get(&ty).unwrap().n_params
                     } else{
@@ -348,16 +348,16 @@ pub struct LearnCtx<'a> {
 
 enum Template {
     Linear(LinearApprox),
-    StaticSemplification(StaticApprox),
-    Dynamicemplification(DynamicApprox),
+    StaticSimplification(StaticApprox),
+    DynamicSimplification(DynamicApprox),
 }
 
 impl Approximation for Template {
     fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
         match self {
             Template::Linear(approx) => approx.apply(arg_terms),
-            Template::StaticSemplification(approx) => approx.apply(arg_terms),
-            Template::Dynamicemplification(approx) => approx.apply(arg_terms),
+            Template::StaticSimplification(approx) => approx.apply(arg_terms),
+            Template::DynamicSimplification(approx) => approx.apply(arg_terms),
         }
     }
 }
@@ -366,15 +366,15 @@ impl Template {
     fn instantiate(&self, model: &Model) -> Approx {
         match self {
             Template::Linear(approx) => approx.instantiate(model),
-            Template::StaticSemplification(approx) => approx.instantiate(),
-            Template::Dynamicemplification(approx) => approx.instantiate(),
+            Template::StaticSimplification(approx) => approx.instantiate(),
+            Template::DynamicSimplification(approx) => approx.instantiate(),
         }
     }
     fn constraint(&self) -> Option<Term> {
         match self {
             Template::Linear(approx) => approx.constraint(),
-            Template::StaticSemplification(_) => None,
-            Template::Dynamicemplification(_) => None,
+            Template::StaticSimplification(_) => None,
+            Template::DynamicSimplification(_) => None,
         }
     }
     fn param_range(&self) -> Option<(i64, i64)> {
@@ -386,8 +386,8 @@ impl Template {
                     None
                 }
             }
-            Template::StaticSemplification(_) => None,
-            Template::Dynamicemplification(_) => None,
+            Template::StaticSimplification(_) => None,
+            Template::DynamicSimplification(_) => None,
         }
     }
 }
@@ -637,7 +637,7 @@ impl StaticApprox {
                 Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
             new_approxs.insert(
                 constr_name.clone(),
-                Template::StaticSemplification(Self {
+                Template::StaticSimplification(Self {
                     approx: Approx {
                         args: approx_args,
                         terms,
@@ -690,7 +690,7 @@ impl DynamicApprox {
                 Self::shift_index(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
             new_approxs.insert(
                 constr_name.clone(),
-                Template::Dynamicemplification(Self {
+                Template::DynamicSimplification(Self {
                     approx: Approx {
                         args: approx_args,
                         terms,
@@ -717,7 +717,7 @@ impl Enc<Template> {
             typ: self.typ.clone(),
             n_params: self.n_params,
             statically_simplified: self.statically_simplified,
-            dinamically_simplified: self.dinamically_simplified,
+            dynamically_simplified: self.dynamically_simplified,
         }
     }
 }

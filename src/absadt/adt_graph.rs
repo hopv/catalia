@@ -179,7 +179,7 @@ impl ADTDependencyGraph {
             let enc = encs.get_mut(&typ).unwrap();
             enc.n_params = *approx_deg;
             if matches!(category_to_flatten, Category::Dynamic) {
-                enc.dinamically_simplified = true;
+                enc.dynamically_simplified = true;
             }
             else {
                 enc.statically_simplified = true;
