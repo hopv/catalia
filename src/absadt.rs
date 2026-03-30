@@ -52,6 +52,7 @@ mod eld_cex;
 mod enc;
 mod hyper_res;
 mod learn;
+mod llm_learn;
 mod preproc;
 
 /// Number of expansion depth for synthesizing the initial catamorphism
@@ -207,7 +208,18 @@ impl<'original> AbsConf<'original> {
         let cex = self.get_combined_cex();
 
         log_debug!("combined_cex: {}", cex);
-        learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
+        if conf.use_llm_learn {
+            llm_learn::work(
+                &mut self.encs,
+                &cex,
+                &mut self.solver,
+                &self.profiler,
+                &self.instance,
+                conf.llm_log_dir.clone(),
+            )?;
+        } else {
+            learn::work(&mut self.encs, &cex, &mut self.solver, &self.profiler)?;
+        }
         log_info!("encs are updated");
         for (tag, enc) in self.encs.iter() {
             log_debug!("{}: {}", tag, enc);
@@ -264,8 +276,8 @@ impl<'original> AbsConf<'original> {
 
         // The approximation map
         if let Some(catamorphism_str) = approximation_file {
-            let parsed_approximations =  catamorphism_parser::parse_catamorphism(catamorphism_str)?;
-			log_info!("Testing the input approximations");
+            let parsed_approximations = catamorphism_parser::parse_catamorphism(catamorphism_str)?;
+            log_info!("Testing the input approximations");
             self.encs =
                 catamorphism_parser::build_encoding_from_approx(parsed_approximations, &self.encs)?;
             let encoded = self.encode();
@@ -308,10 +320,7 @@ impl<'original> AbsConf<'original> {
 }
 
 impl<'a> AbsConf<'a> {
-    pub fn encode_clause(
-        &self,
-        c: &chc::AbsClause
-    ) -> chc::AbsClause {
+    pub fn encode_clause(&self, c: &chc::AbsClause) -> chc::AbsClause {
         let ctx = enc::EncodeCtx::new(&self.encs);
         let (new_vars, introduced) = enc::tr_varinfos(&self.encs, &c.vars);
         let encode_var = |_, var| {
@@ -402,8 +411,7 @@ impl<'a> AbsConf<'a> {
         let head_argument = term::dtyp_new(
             typ.clone(),
             constr_name,
-            vars
-                .iter()
+            vars.iter()
                 .map(|v| term::var(v.idx, v.typ.clone()))
                 .collect(),
         );
@@ -418,7 +426,7 @@ impl<'a> AbsConf<'a> {
                         args: args.into(),
                     };
                     lhs_preds.push(app);
-                },
+                }
                 None => {
                     assert!(!var.typ.is_dtyp());
                 }
@@ -459,10 +467,7 @@ impl<'a> AbsConf<'a> {
         for (typ, _) in self.encs.iter() {
             let pi = preds.next_index();
             let p = Pred::new(
-                format!(
-                    "encoder_pred_{}",
-                    enc::to_valid_symbol(typ.to_string()),
-                ),
+                format!("encoder_pred_{}", enc::to_valid_symbol(typ.to_string()),),
                 pi,
                 vec![typ.clone()].into(),
             );
@@ -504,7 +509,7 @@ impl<'a> AbsConf<'a> {
                 let app = chc::PredApp {
                     pred: *approx_pred,
                     args: args.into(),
-                    };
+                };
                 lhs_preds.push(app);
             }
             res.push(chc::AbsClause {
@@ -525,14 +530,9 @@ impl<'a> AbsConf<'a> {
         clauses.extend(clauses2);
 
         // 2. encode the clauses by using the current catamorphism
-        let preds = preds
-            .iter()
-            .map(|p| self.encode_pred(p))
-            .collect();
+        let preds = preds.iter().map(|p| self.encode_pred(p)).collect();
 
-        let clauses: Vec<_> = clauses.iter()
-            .map(|c| self.encode_clause(c))
-            .collect();
+        let clauses: Vec<_> = clauses.iter().map(|c| self.encode_clause(c)).collect();
 
         self.instance.clone_with_clauses(clauses, preds)
     }

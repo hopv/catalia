@@ -64,11 +64,8 @@ impl TemplateInfo {
                     }
                     for i in 0..n_arg {
                         let next_index = variables.next_index();
-                        let info = VarInfo::new(
-                            format!("arg-{}-{}", sel, i),
-                            typ::int(),
-                            next_index,
-                        );
+                        let info =
+                            VarInfo::new(format!("arg-{}-{}", sel, i), typ::int(), next_index);
                         variables.push(info.clone());
                         approx_args.push(info);
                         if is_recursive {
@@ -246,25 +243,29 @@ impl std::iter::Iterator for TemplateScheduler {
             self.idx += 1;
 
             let r = match next_template.typ {
-                TemplateType::BoundStructuredLinear { min, max } => TemplateInfo::new_linear_approx(
-                    &self.enc,
-                    next_template.n_encs,
-                    Some(min),
-                    Some(max),
-                    true,
-                ),
-                TemplateType::BoundLinear { min, max } => {
+                TemplateType::BoundStructuredLinear { min, max } => {
                     TemplateInfo::new_linear_approx(
                         &self.enc,
                         next_template.n_encs,
                         Some(min),
                         Some(max),
-                        false,
+                        true,
                     )
                 }
-                TemplateType::Linear => {
-                    TemplateInfo::new_linear_approx(&self.enc, next_template.n_encs, None, None, false)
-                }
+                TemplateType::BoundLinear { min, max } => TemplateInfo::new_linear_approx(
+                    &self.enc,
+                    next_template.n_encs,
+                    Some(min),
+                    Some(max),
+                    false,
+                ),
+                TemplateType::Linear => TemplateInfo::new_linear_approx(
+                    &self.enc,
+                    next_template.n_encs,
+                    None,
+                    None,
+                    false,
+                ),
             };
             log_info!("Template: {}", next_template);
             break Some(r);
@@ -392,7 +393,11 @@ impl LinearApprox {
         for cnst in self.cnst.iter() {
             subst_map.insert(*cnst, term::val(model[*cnst].clone()));
         }
-        for coef in self.coef.iter().flat_map(|coefs| coefs.iter().filter_map(|c| *c)) {
+        for coef in self
+            .coef
+            .iter()
+            .flat_map(|coefs| coefs.iter().filter_map(|c| *c))
+        {
             subst_map.insert(coef, term::val(model[coef].clone()));
         }
 
@@ -467,10 +472,7 @@ impl LinearApprox {
             cnst.push(const_idx);
         }
 
-        let approx = Approx {
-            args,
-            terms,
-        };
+        let approx = Approx { args, terms };
 
         Self {
             coef,
@@ -649,8 +651,8 @@ fn test_solve_by_blasting_unsat() {
     fvs.insert(x_idx);
     fvs.insert(y_idx);
 
-    let model = solve_by_blasting(&form, &template_info, &fvs, -1, 1)
-        .expect("blasting should not error");
+    let model =
+        solve_by_blasting(&form, &template_info, &fvs, -1, 1).expect("blasting should not error");
     assert!(model.is_none());
 }
 
@@ -666,7 +668,10 @@ fn test_solve_by_blasting_prioritizes_zero() {
     };
 
     let x = term::var(x_idx, typ::int());
-    let form = term::or(vec![term::eq(x.clone(), term::int(-1)), term::eq(x.clone(), term::int(0))]);
+    let form = term::or(vec![
+        term::eq(x.clone(), term::int(-1)),
+        term::eq(x.clone(), term::int(0)),
+    ]);
 
     let mut fvs = VarSet::new();
     fvs.insert(x_idx);
@@ -810,7 +815,7 @@ impl<'a> LearnCtx<'a> {
         let fvs = form.free_vars();
         if let Some((min, max)) = template_info.param_range() {
             if fvs.len() <= THRESHOLD_BLASTING && max - min + 1 <= THRESHOLD_BLASTING_MAX_RANGE {
-                return solve_by_blasting(form, template_info, &fvs, min, max)
+                return solve_by_blasting(form, template_info, &fvs, min, max);
             }
         }
         self.solver.reset()?;
