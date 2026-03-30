@@ -83,6 +83,25 @@ impl Approx {
             terms: vec![term::int_zero()],
         }
     }
+
+    pub fn expand_signature(
+        &mut self,
+        simplifications: &BTreeMap<Typ, usize>,
+    ) {
+        let mut new_signature = VarMap::<VarInfo>::new();
+        for old_arg in self.args.iter() {
+            let arg_approx_degree = simplifications.get(&old_arg.typ).unwrap_or(&1);
+            for degree in 0..*arg_approx_degree {
+                new_signature.push(VarInfo {
+                    name: format!("{}_{}", old_arg.name.clone(), degree,),
+                    typ: typ::int(),
+                    idx: new_signature.next_index(),
+                    active: true,
+                });
+            }
+        }
+        self.args = new_signature;
+    }
 }
 
 pub trait Approximation {
@@ -114,6 +133,8 @@ pub struct Enc<Approx> {
     pub typ: Typ,
     pub n_params: usize,
     pub approxs: BTreeMap<String, Approx>,
+    pub statically_simplified: bool,
+    pub dynamically_simplified: bool,
 }
 
 impl<Approx: std::fmt::Display> std::fmt::Display for Enc<Approx> {
@@ -172,6 +193,8 @@ impl<A: Approximation> Enc<A> {
             typ: ilist_typ,
             n_params: 1,
             approxs,
+            statically_simplified: false,
+            dynamically_simplified: false,
         }
     }
     fn get_ith_enc_rdf_name(&self, i: usize) -> String {

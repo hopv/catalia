@@ -133,6 +133,71 @@ pub enum PartialTyp {
     Param(TPrmIdx),
 }
 
+impl PartialTyp {
+    pub fn get_adt_name(&self) -> Option<String> {
+        match self {
+            PartialTyp::DTyp(name, _, _) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn get_adt_args(&self) -> Option<Vec<&PartialTyp>> {
+        match self {
+            PartialTyp::DTyp(_, _, args) => Some(args.iter().map(|arg| arg).collect()),
+            _ => None,
+        }
+    }
+
+    /// Returns the approximation degree of the current [`PartialTyp`]
+    /// as a [`usize`].
+    ///
+    /// # Arguments
+    ///
+    /// * `generic_rtyps` - The map  with all the concrete types for the paramters.
+    /// * `system_adts` - The set of all the known ADT types in the system.
+    /// * `cache` - A map of the ADTs insepcted so far.
+    ///
+    /// # Returns
+    ///
+    /// A [`usize`] representing the initial approximation degree of [`PartialTyp`].
+    pub fn degree_of_arg(
+        &self,
+        generic_rtyps: &TPrmMap<Typ>,
+        system_adts: &BTreeSet<Typ>,
+        cache: &mut BTreeMap<typ::RTyp, usize>,
+    ) -> Res<usize> {
+        match self {
+            PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
+                typ::RTyp::Int => Ok(1),
+                typ::RTyp::DTyp { .. } => {
+                    arg_rtyp.ensure_cached(system_adts, cache);
+                    Ok(*cache.get(arg_rtyp.get()).unwrap_or(&0))
+                }
+                _ => Err(Error::from_kind(ErrorKind::Msg(format!(
+                    "{self} is not an integer or a Datatype"
+                )))),
+            },
+            PartialTyp::DTyp(_, _, _) => {
+                match self.to_type(Some(generic_rtyps)) {
+                    Ok(arg_rtyp) => {
+                        arg_rtyp.ensure_cached(system_adts, cache);
+                    Ok(*cache.get(&arg_rtyp).unwrap_or(&0))
+                    }
+                    Err((_, msg)) =>  Err(Error::from_kind(ErrorKind::Msg(msg))),
+                }
+            }
+            PartialTyp::Param(idx) => {
+                let param_rtyp = generic_rtyps[*idx].get();
+                param_rtyp.ensure_cached(system_adts, cache);
+                Ok(*cache.get(param_rtyp).unwrap_or(&0))
+            }
+            _ => Err(Error::from_kind(ErrorKind::Msg(format!(
+                "{self} partial type not supported"
+            )))),
+        }
+    }
+}
+
 impl From<Typ> for PartialTyp {
     fn from(typ: Typ) -> Self {
         PartialTyp::Typ(typ)

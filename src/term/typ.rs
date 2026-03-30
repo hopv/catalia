@@ -2,7 +2,10 @@
 
 use hashconsing::{HConsed, HashConsign};
 
-use crate::{common::*, dtyp::TPrmMap};
+use crate::{
+    common::*,
+    dtyp::{PartialTyp, RDTyp, TPrmMap},
+};
 
 hashconsing::consign! {
   /// Type factory.
@@ -168,6 +171,135 @@ impl RTyp {
         }
     }
 
+    pub fn dtyp_dependencies(
+        &self,
+        system_adts: &BTreeSet<Typ>,
+    ) -> Res<BTreeSet<Typ>> {
+        let mut dependencies = BTreeSet::new();
+        if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            for (_, args) in dtyp.news.iter() {
+                for (_, arg_ptyp) in args.iter() {
+                    match arg_ptyp {
+                        PartialTyp::Typ(rtyp) => match rtyp.get() {
+                            RTyp::DTyp { dtyp: _, prms: _ } => {
+                                dependencies.insert(rtyp.clone());
+                            }
+                            RTyp::Int => {}
+                            _ => {
+                                return Err(Error::from_kind(ErrorKind::Msg(format!(
+                                    "I was expecting an ADT or an Int, found {rtyp}"
+                                ))));
+                            }
+                        },
+                        PartialTyp::DTyp(_, _, _) => {
+                            if let Ok(arg_rtyp) = arg_ptyp.to_type(Some(generic_rtyps)) {
+                                if let Some(dep_typ) = system_adts.get(&arg_rtyp) {
+                                    dependencies.insert(dep_typ.clone());
+                                }
+                            }
+                        }
+                        PartialTyp::Param(_) => {}
+                        _ => {
+                            return Err(Error::from_kind(ErrorKind::Msg(format!(
+                                "I was expecting a concrete type or a generic, found {arg_ptyp} in {dtyp}"
+                            ))));
+                        }
+                    }
+                }
+            }
+            for generic_rtyp in generic_rtyps.iter() {
+                match generic_rtyp.get() {
+                    RTyp::DTyp { dtyp: _, prms: _ } => {
+                        dependencies.insert(generic_rtyp.clone());
+                    }
+                    RTyp::Int => {}
+                    _ => {
+                        return Err(Error::from_kind(ErrorKind::Msg(format!(
+                            "I was expecting either an ADT or an Int, found {generic_rtyp}"
+                        ))));
+                    }
+                }
+            }
+        }
+        Ok(dependencies)
+    }
+
+    pub fn is_recursive(&self, system_adts: &BTreeSet<Typ>,) -> Res<bool> {
+        let mut stack = vec![self.clone()];
+        let mut already_visted = BTreeSet::new();
+        while let Some(typ) = stack.pop() {
+            already_visted.insert(typ.clone());
+            for dep in typ.dtyp_dependencies(system_adts)?.iter() {
+                if dep.get() == self {
+                    return Ok(true);
+                }
+                if !already_visted.contains(dep.get()) {
+                    stack.push(dep.get().clone());
+                }
+            }
+        }
+        return Ok(false);
+    }
+
+    /// Returns the approximation degree of the current **simplifiable** [`RTyp`]
+    /// as a [`usize`].
+    ///
+    /// # Arguments
+    ///
+    /// * `system_adts` - The set of all the known ADT types in the system.
+    /// * `cache` - A map of the ADTs insepcted so far.
+    ///
+    /// # Returns
+    ///
+    /// A [`usize`] representing the initial approximation degree of [`RTyp`].
+    pub fn compute_approximation_degree(
+        &self,
+        system_adts: &BTreeSet<Typ>,
+        cache: &mut BTreeMap<Self, usize>,
+    ) -> Res<()> {
+        if cache.contains_key(self) {
+            return Ok(());
+        }
+
+        let approx_degree = if self.is_recursive(system_adts).is_ok_and(|v| v) {
+            1
+        }
+        else if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            let constructor_degree = dtyp
+                .news
+                .iter()
+                .map(|(_, args)| {
+                    args.iter()
+                        .map(|(_, arg_ptyp)| arg_ptyp.degree_of_arg(generic_rtyps, system_adts, cache))
+                        .sum::<Res<usize>>()
+                })
+                .collect::<Res<Vec<usize>>>()?
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+                                 // Constructors discriminator
+            constructor_degree + usize::from(dtyp.news.len() > 1)
+        } else {
+            1
+        };
+
+        cache.insert(self.clone(), approx_degree);
+
+        Ok(())
+    }
+
+    /// Ensures [`RTtyp`] has an entry in `cache`, recursing if necessary.
+    pub(crate) fn ensure_cached(&self, system_adts: &BTreeSet<Typ>, cache: &mut BTreeMap<RTyp, usize>) -> Res<()> {
+        if !cache.contains_key(self) {
+            if self.is_recursive(system_adts).is_ok_and(|v| v) {
+                cache.insert(self.clone(), 1);
+            } else {
+                self.compute_approximation_degree(system_adts, cache)?;
+            }
+        }
+        Ok(())
+    }
+    
     /// Checks a type is legal.
     pub fn check(&self) -> Res<()> {
         match self {
