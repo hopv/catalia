@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::conf;
 use crate::term;
 use crate::typ;
 use crate::VarMap;
@@ -228,4 +227,58 @@ impl std::fmt::Display for ADTDependencyGraph {
         }
         write!(f, "}}",)
     }
+}
+
+#[test]
+fn test_static_adt_detection() {
+    use crate::dtyp::PartialTyp;
+    use crate::dtyp::TPrmIdx;
+    use crate::dtyp::RDTyp;
+    use crate::parse::Pos;
+
+    let dummy_pos = Pos::default();
+    let param_0: TPrmIdx = 0.into();
+    let ptyp = PartialTyp::DTyp (
+        "List".into(), dummy_pos, vec![ PartialTyp::Param(param_0) ].into()
+    );
+    let mut boolean = RDTyp::new("Bool");
+    let _ = boolean.add_constructor("True", vec![]);
+    let _ = boolean.add_constructor("False", vec![]);
+    let boolean = typ::dtyp(DTyp::new(boolean), vec![].into());
+    let b_list = typ::dtyp(crate::dtyp::get("List").unwrap(), vec![boolean.clone()].into());
+    let mut adts_encs: BTreeMap<Typ, Encoder> = BTreeMap::new();
+    let fake_enc: Enc<Approx> = Enc { typ: typ::int(), n_params: 1, approxs: BTreeMap::new(), statically_simplified: false, dynamically_simplified: false };
+    adts_encs.insert(boolean.clone(), fake_enc.clone());
+    adts_encs.insert(b_list.clone(), fake_enc.clone());
+    let graph = ADTDependencyGraph::new(&adts_encs).unwrap();
+    let mut expected: BTreeSet<Typ> = BTreeSet::new();
+    expected.insert(boolean);
+    assert_eq!(graph.statically_simplifiable, expected);
+}
+
+#[test]
+fn test_dynamic_adt_detection() {
+    use crate::dtyp::PartialTyp;
+    use crate::dtyp::TPrmIdx;
+    use crate::dtyp::RDTyp;
+    use crate::parse::Pos;
+
+    let dummy_pos = Pos::default();
+    let param_0: TPrmIdx = 0.into();
+    let ptyp = PartialTyp::DTyp (
+        "List".into(), dummy_pos, vec![ PartialTyp::Param(param_0) ].into()
+    );
+    let int_list = typ::dtyp(crate::dtyp::get("List").unwrap(), vec![typ::int()].into());
+
+    let mut tuple = RDTyp::new("Tuple");
+    let _ = tuple.add_constructor("tuple", vec![("first".to_string(), PartialTyp::Typ(int_list.clone())), ("second".to_string(), PartialTyp::Typ(int_list.clone()))]);
+    let tuple = typ::dtyp(DTyp::new(tuple), vec![].into());
+    let mut adts_encs: BTreeMap<Typ, Encoder> = BTreeMap::new();
+    let fake_enc: Enc<Approx> = Enc { typ: typ::int(), n_params: 1, approxs: BTreeMap::new(), statically_simplified: false, dynamically_simplified: false };
+    adts_encs.insert(int_list.clone(), fake_enc.clone());
+    adts_encs.insert(tuple.clone(), fake_enc.clone());
+    let graph = ADTDependencyGraph::new(&adts_encs).unwrap();
+    let mut expected: BTreeSet<Typ> = BTreeSet::new();
+    expected.insert(tuple);
+    assert_eq!(graph.dynamically_simplifiable, expected);
 }
