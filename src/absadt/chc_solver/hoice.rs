@@ -1,14 +1,23 @@
+use super::CancelGroup;
 use super::CHCSolver;
 use super::Instance as InstanceT;
 use crate::common::*;
 use std::borrow::Cow;
 use std::io::BufReader;
+use command_group::CommandGroup;
 use std::process::{Command, Stdio};
 
 pub struct Hoice {
-    child: std::process::Child,
-    stdin: std::process::ChildStdin,
+    child: command_group::GroupChild,
+    stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for Hoice {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 const OPTION: [&str; 0] = [];
@@ -25,13 +34,13 @@ impl Hoice {
             .args(args.iter().map(|s| s.as_ref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("no stdin");
-        let stdout = child.stdout.take().expect("no stdout");
+            .group_spawn()?;
+        let stdin = child.inner().stdin.take().expect("no stdin");
+        let stdout = child.inner().stdout.take().expect("no stdout");
         let stdout = BufReader::new(stdout);
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
         })
     }
@@ -42,17 +51,17 @@ impl CHCSolver for Hoice {
     where
         I: InstanceT,
     {
-        instance.dump_as_smt2(&mut self.stdin, "", encode_tag)?;
+        instance.dump_as_smt2(self.stdin.as_mut().expect("stdin already closed"), "", encode_tag)?;
         Ok(())
     }
 
     fn check_sat(mut self) -> Res<bool> {
         let mut line = String::new();
-        writeln!(&mut self.stdin, "(exit)").discard();
+        writeln!(self.stdin.as_mut().expect("stdin already closed"), "(exit)").discard();
+        // Close stdin so the child sees EOF after "(exit)".
+        drop(self.stdin.take());
 
         self.stdout.read_to_string(&mut line)?;
-
-        self.child.kill().unwrap();
 
         if line.starts_with("sat") {
             Ok(true)
@@ -68,16 +77,17 @@ impl CHCSolver for Hoice {
         S: AsRef<[u8]>,
     {
         let s = s.as_ref();
-        self.stdin.write_all(s)?;
+        self.stdin.as_mut().expect("stdin already closed").write_all(s)?;
         Ok(())
     }
 }
 
-pub fn run_hoice<I>(instance: &I, timeout: Option<usize>, encode_tag: bool) -> Res<bool>
+pub fn run_hoice<I>(instance: &I, timeout: Option<usize>, encode_tag: bool, cancel: Option<&CancelGroup>) -> Res<bool>
 where
     I: InstanceT,
 {
     let mut hoice = Hoice::new(timeout)?;
+    if let Some(c) = cancel { c.register(hoice.child.id()); }
     hoice.dump_instance_with_encode_tag(instance, encode_tag)?;
     hoice.check_sat()
 }
