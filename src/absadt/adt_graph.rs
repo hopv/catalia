@@ -231,6 +231,7 @@ impl std::fmt::Display for ADTDependencyGraph {
 
 #[test]
 fn test_static_adt_detection() {
+    use crate::dtyp::DTyp;
     use crate::dtyp::PartialTyp;
     use crate::dtyp::TPrmIdx;
     use crate::dtyp::RDTyp;
@@ -258,6 +259,7 @@ fn test_static_adt_detection() {
 
 #[test]
 fn test_dynamic_adt_detection() {
+    use crate::dtyp::DTyp;
     use crate::dtyp::PartialTyp;
     use crate::dtyp::TPrmIdx;
     use crate::dtyp::RDTyp;
