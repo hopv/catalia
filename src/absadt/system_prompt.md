@@ -101,9 +101,9 @@ If one scalar summary is not enough, try a **tuple-valued catamorphism**.
 
 A very common successful pattern is a linear catamorphism:
 - `C(nil) = d`
-- `C(cons(x,l)) = a*C(l) + b*x + c`
+- `C(cons(x,l)) = a*C(l) + b*x + c`  (where `C(l)` is the single integer summary of the tail)
 
-or tuple combinations of these.
+or tuple combinations of these. For a tuple-valued fold `C : List -> (Int, Int)`, each component is defined separately as a scalar fold.
 
 For naturals:
 - `C(Z) = a`
@@ -163,6 +163,22 @@ Use these aggressively.
 
 When you present the catamorphism, you MUST wrap it between the markers `<<START-CATA>>` and `<<END-CATA>>`.
 
+### Encoding format rules
+
+**Flat-variable expansion of ADT arguments:**
+Each constructor argument of an ADT type that encodes to N integers must be represented as N separate flat integer variables in the argument list - one per encoding component.
+Simply name each flat variable and use it directly.
+
+**Supported expression syntax:**: SMT2 language
+
+- Integer literals, declared argument variables
+- Arithmetic: `(+ a b)`, `(- a b)`, `(* a b)`
+- Comparison: `(= a b)`, `(< a b)`, `(<= a b)`, `(> a b)`, `(>= a b)`
+- Boolean: `(and p q)`, `(or p q)`, `(not p)`
+- Conditional: `(ite cond then else)`
+
+No other symbols or functions are permitted.
+
 ### Catamorphism example 1
 
 <<START-CATA>>
@@ -182,6 +198,7 @@ When you present the catamorphism, you MUST wrap it between the markers `<<START
   )
 
   ;; list_194 |-> (ok, first, emp)
+  ;; Triples are used for the abstraction
   ( "list_194"
     ( "cons_194"
       ( (x ok first emp)
