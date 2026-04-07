@@ -1,3 +1,9 @@
+/*
+LLM-based encoder learning.
+
+This module is mostly written by Claude Opus 4.6, co-authored by Hiroyuki Katsura.
+*/
+
 use std::io::Write as IoWrite;
 use std::panic;
 use std::path::PathBuf;
@@ -384,35 +390,68 @@ fn build_chc_context(instance: &AbsInstance, encs: &BTreeMap<Typ, Encoder>) -> S
 
     format!(
         "{}\n\n## CHC Problem (SMT-LIB format)\n\n```smt2\n{}\n```\n\n## Current Encoders\n\n```\n{}\n```\n\n\
-The current encoders are insufficient and produce spurious counterexamples. \
-Analyze the CHC problem and propose a catamorphism that captures the essential invariant.",
+The current encoders produce spurious counterexamples. \
+Propose a catamorphism that refutes the spurious CEX shown below.\n\
+**Do NOT determine whether the original problem is SAT or UNSAT. \
+Just propose a catamorphism that makes the CEX unsatisfiable in the integer encoding.**\n\
+Output only sections 1, 2, and 3 of the required output format.",
         build_required_datatypes(encs),
         chc_str, enc_str
     )
 }
 
-fn build_cex_feedback(cex: &CEX, prev_attempt: Option<&str>) -> String {
-    let mut s = format!(
-        "## Spurious Counterexample\n\n```\n{}\n```\n\n\
-The encoder must make this CEX unsatisfiable when the ADT variables are replaced \
-by their encoded integer representations.",
-        cex
+/// Extract the "### 2. High-level idea" section from an LLM response.
+fn extract_high_level_idea(response: &str) -> Option<&str> {
+    let start = response.find("### 2.")?;
+    let after = &response[start..];
+    let end = after[1..].find("\n### ").map(|i| i + 1).unwrap_or(after.len());
+    Some(after[..end].trim())
+}
+
+/// Extract the last <<START-CATA>> ... <<END-CATA>> block from an LLM response.
+fn extract_cata_block(response: &str) -> Option<&str> {
+    let start = response.rfind(CATA_START_MARKER)?;
+    let after_start = start + CATA_START_MARKER.len();
+    let end = response[after_start..].find(CATA_END_MARKER)?;
+    Some(&response[start..after_start + end + CATA_END_MARKER.len()])
+}
+
+/// Summarise a full LLM response to the parts useful for retry context:
+/// high-level idea and catamorphism block only, labelled clearly.
+fn summarise_response(response: &str) -> String {
+    let mut s = String::from(
+        "## My previous proposal (failed to refute the CEX)\n\n",
     );
-    if let Some(prev) = prev_attempt {
-        // Only include a short note about the previous attempt, not the full response
-        // (the full response is already in the conversation as an assistant message)
-        let truncated = if prev.len() > 200 {
-            format!("{}...(truncated)", &prev[..200])
-        } else {
-            prev.to_string()
-        };
-        s += &format!(
-            "\n\n## Previous Attempt (failed)\n\nYour previous proposal did not refute the CEX. \
-First few chars: `{}`\n\nPlease try a different encoding strategy.",
-            truncated
-        );
+    if let Some(idea) = extract_high_level_idea(response) {
+        s += idea;
+        s += "\n\n";
+    }
+    if let Some(cata) = extract_cata_block(response) {
+        s += cata;
+    }
+    if s.is_empty() {
+        // Fallback: first 400 chars
+        let boundary = response
+            .char_indices()
+            .map(|(i, _)| i)
+            .filter(|&i| i <= 400)
+            .last()
+            .unwrap_or(0);
+        s = format!("{}...(truncated)", &response[..boundary]);
     }
     s
+}
+
+fn build_cex_feedback(cex: &CEX) -> String {
+    format!(
+        "## CEX to refute\n\n\
+The catamorphism you proposed above did NOT refute this spurious CEX:\n\n\
+```\n{}\n```\n\n\
+This formula must be **unsatisfiable** after substituting your catamorphism \
+(i.e., replacing each ADT equality with the corresponding integer equalities).\n\n\
+**Your task:** propose a new catamorphism that makes it unsatisfiable. ",
+        cex
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -615,21 +654,25 @@ fn validate_encoder_structure(
             // Check parameter count: one param per selector, but recursive ADT
             // selectors contribute n_params integers instead of 1
             let mut expected_params = 0;
-            for (_sel_name, sel_ty) in sels.iter() {
+            let mut breakdown = Vec::new();
+            for (sel_name, sel_ty) in sels.iter() {
                 let ty = sel_ty.to_type(Some(prms)).unwrap();
                 if let Some(enc) = new_encs.get(&ty) {
+                    breakdown.push(format!("{}:{} → {}", sel_name, ty, enc.n_params));
                     expected_params += enc.n_params;
                 } else {
+                    breakdown.push(format!("{}:Int → 1", sel_name));
                     expected_params += 1;
                 }
             }
             if approx.args.len() != expected_params {
                 return Err(Error::from_kind(crate::errors::ErrorKind::Msg(format!(
-                    "LLM proposal for {}::{} has {} params, expected {}",
+                    "LLM proposal for {}::{} has {} params, expected {} ({})",
                     typ,
                     constr_name,
                     approx.args.len(),
-                    expected_params
+                    expected_params,
+                    breakdown.join(", ")
                 ))));
             }
 
@@ -697,8 +740,11 @@ fn check_enc_refutes_cex(
         Ok(true) => Ok(false), // SAT = not refuted
         Err(e) => {
             let e: Error = e.into();
-            if e.is_timeout() {
-                Ok(false) // timeout = treat as not refuted
+            // Z3's :timeout option causes it to return `unknown`, which rsmt2
+            // surfaces as ErrorKind::Unknown (not ErrorKind::Timeout).
+            // Treat both as "not refuted" so the retry loop continues.
+            if e.is_timeout() || e.is_unknown() {
+                Ok(false)
             } else {
                 Err(e)
             }
@@ -737,7 +783,7 @@ pub fn work(
             content: format!(
                 "{}\n\n{}",
                 build_chc_context(instance, encs),
-                build_cex_feedback(cex, None)
+                build_cex_feedback(cex)
             ),
         },
     ];
@@ -822,13 +868,15 @@ with the correct number of parameters and result expressions.",
             }
             Ok(false) => {
                 log_info!("LLM encoder does NOT refute CEX, retrying...");
+                // Keep only the key parts (high-level idea + catamorphism) to avoid
+                // bloating the conversation with verbose reasoning.
                 conversation.push(Message {
                     role: "assistant".into(),
-                    content: response.clone(),
+                    content: summarise_response(&response),
                 });
                 conversation.push(Message {
                     role: "user".into(),
-                    content: build_cex_feedback(cex, Some(&response)),
+                    content: build_cex_feedback(cex),
                 });
             }
             Err(e) => {
@@ -1200,5 +1248,64 @@ SAT
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
         let enc = result.unwrap().into_values().next().unwrap();
         assert_eq!(enc.n_params, 1);
+    }
+
+    #[test]
+    fn test_parse_llm_response_with_markers_and_comments() {
+        // Comments (;; and ;) should be stripped before parsing.
+        // Multi-param format: args followed by one term per output component.
+        let response = r#"""
+        <<START-CATA>>
+(
+  ;; Lst |-> (len, headIsZero)
+  ( "Lst"
+    ( "cons"
+      ( (x h)
+        ( ( + h 1 ) )
+        ;; headIsZero = 1 iff head x == 0
+        ( ( ite (= x 0) 1 0 ) )
+      )
+    )
+    ( "nil"
+      ( ()
+        0
+      )
+    )
+  )
+  ;; NOTE: Catalia block for tuples requires giving one component per output.
+  ;; Therefore we encode:
+  ;;   component 0: len
+  ;;   component 1: headIsZero
+  ( "Lst_len"
+    ( "cons"
+      ( (x h)
+        (+ h 1)
+      )
+    )
+    ( "nil"
+      ( ()
+        0
+      )
+    )
+  )
+  ( "Lst_headIsZero"
+    ( "cons"
+      ( (x h)
+        (ite (= x 0) 1 0)
+      )
+    )
+    ( "nil"
+      ( ()
+        0
+      )
+    )
+  )
+)
+<<END-CATA>>"""#;
+        let encs = make_list_encs();
+        let result = parse_llm_response(response, &encs);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let enc = result.unwrap().into_values().next().unwrap();
+        assert_eq!(enc.n_params, 2);
     }
 }

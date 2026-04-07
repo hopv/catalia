@@ -165,19 +165,61 @@ When you present the catamorphism, you MUST wrap it between the markers `<<START
 
 ### Encoding format rules
 
-**Flat-variable expansion of ADT arguments:**
-Each constructor argument of an ADT type that encodes to N integers must be represented as N separate flat integer variables in the argument list - one per encoding component.
-Simply name each flat variable and use it directly.
+**Flat-variable expansion of constructor arguments:**
+Each constructor argument contributes flat integer variables to the parameter list:
+- An **Int** argument contributes exactly **1** variable.
+- A **recursive ADT** argument with an N-component encoding contributes exactly **N** variables.
+
+Do NOT add extra variables. The selector name declared in the CHC (e.g. `head`) is just a hint — pick one identifier per argument.
+
+WRONG for `cons(head:Int, tail:Lst)` with a 2-component `Lst` encoding:
+  `(x head tLen tPar)` — 4 variables (two for the Int selector `head`)
+
+RIGHT:
+  `(head tLen tPar)` — 3 variables (1 for `head:Int`, 2 for `tail:Lst`)
 
 **Supported expression syntax:**: SMT2 language
 
 - Integer literals, declared argument variables
 - Arithmetic: `(+ a b)`, `(- a b)`, `(* a b)`
 - Comparison: `(= a b)`, `(< a b)`, `(<= a b)`, `(> a b)`, `(>= a b)`
-- Boolean: `(and p q)`, `(or p q)`, `(not p)`
-- Conditional: `(ite cond then else)`
+- Boolean: `(and p q)`, `(or p q)`, `(not p)` — **only as the condition inside `ite`**
+- Conditional: `(ite cond then else)` where `cond` is a comparison or boolean expression, and `then`/`else` are integer expressions
 
 No other symbols or functions are permitted.
+
+Result expressions are **integer-valued**. `and`, `or`, `not` return booleans and must NOT appear as top-level result expressions. To encode boolean logic as integers, use `ite`:
+
+  WRONG: `(or E (= x 0))`
+  RIGHT: `(ite (= x 0) 1 E)`
+
+**One block per datatype:**
+Use exactly one `( "DatatypeName" ... )` entry per datatype — the name must match what is declared in the CHC problem exactly.
+Do NOT split a multi-component encoding into separate entries like `"Lst_len"` and `"Lst_sum"`.
+A 2-component fold of `Lst` is a single `"Lst"` block whose constructors each produce 2 result expressions.
+
+**Result expressions are listed flat — no extra wrapping:**
+After the parameter list, write each result expression directly, one per line.
+Do NOT wrap individual result expressions in an extra pair of parentheses.
+
+WRONG (extra parens around each expression):
+```
+( "cons"
+  ( (x t0 t1)
+    ( (+ t0 1) )          ; ← WRONG
+    ( (ite (= x 0) 1 0) ) ; ← WRONG
+  )
+)
+```
+CORRECT (expressions listed directly):
+```
+( "cons"
+  ( (x t0 t1)
+    (+ t0 1)              ; component 0
+    (ite (= x 0) 1 0)     ; component 1
+  )
+)
+```
 
 ### Catamorphism example 1
 
@@ -279,6 +321,19 @@ Briefly explain the invariant and why a catamorphism is appropriate.
 Define the catamorphism precisely for each constructor.
 Include the **Catalia-style catamorphism block** wrapped in `<<START-CATA>>` / `<<END-CATA>>` markers.
 If tuple-valued, clearly name each component.
+
+### 3b. CEX refutation check (mandatory)
+Substitute your catamorphism into the CEX formula and verify algebraically that
+the result is UNSAT. Show the substitution explicitly — do not skip this.
+
+Example: CEX = `(= v0 (cons 0 nil)) ∧ v2≠0 ∧ (= (cons v2 v1) v0)`.
+C(nil)=(0,0), C(cons h t0 t1)=(h, t0+1).
+  C(v0) = (0, 1).  C(cons v2 v1) = (v2, t0+1).
+  Equality → v2=0 ∧ t0+1=1. Contradicts v2≠0. ✓ UNSAT.
+
+If the substituted formula is NOT UNSAT, revise the catamorphism.
+Key insight: to refute an equality `(cons A ...) = (cons B ...)` when `A≠B` is given,
+at least one catamorphism component must depend on the head value and distinguish A from B.
 
 ### 4. Range / admissibility predicate
 Define the image predicate `P_delta`.

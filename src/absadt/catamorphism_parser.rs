@@ -15,10 +15,53 @@ macro_rules! bop_bool {
     };
 }
 
+/// Strip Lisp-style semicolon comments from an s-expression string.
+fn strip_sexp_comments(input: &str) -> String {
+    let mut result = String::new();
+    for line in input.lines() {
+        // Find ';' that is not inside a string literal
+        let mut in_string = false;
+        let mut escape_next = false;
+        let mut comment_start = None;
+        for (i, c) in line.char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            if in_string {
+                match c {
+                    '\\' => escape_next = true,
+                    '"' => in_string = false,
+                    _ => {}
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    ';' => {
+                        comment_start = Some(i);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let effective = if let Some(pos) = comment_start {
+            &line[..pos]
+        } else {
+            line
+        };
+        result.push_str(effective);
+        result.push('\n');
+    }
+    result
+}
+
 /// Parser for a catamorphism from an s-expression string
 pub fn parse_catamorphism_str(
     input_string: &str,
 ) -> Res<BTreeMap<String, (BTreeMap<String, Approx>, usize)>> {
+    let input_string = strip_sexp_comments(input_string);
+    let input_string = input_string.as_str();
     let mut approximations_per_system = BTreeMap::new();
     if let Ok(tokenized) = lexpr::from_str(input_string) {
         if let Some(datatype) = tokenized.as_cons() {
