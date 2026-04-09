@@ -639,14 +639,55 @@ impl SimplifiedApprox {
         new_terms
     }
 
-    fn create_vars_info (variables: &mut VarInfos, approx_args: &mut VarInfos, old_approx: &Enc<Approx>, constr_name: &str, ) {
-        for idx in 0..old_approx.approxs.get(constr_name).unwrap().args.len() {
+    fn new_dynamic_term(new_args: &VarInfos, constructor_discriminator: isize) -> Vec<Term> {
+        let mut new_terms = Vec::new();
+        if constructor_discriminator >= 0 {
+            new_terms.push(term::int(constructor_discriminator));
+        }
+        for arg in new_args.iter() {
+            new_terms.push(term::int_var(arg.idx));
+        }
+        new_terms
+    }
+
+    fn create_vars_info (
+        variables: &mut VarInfos,
+        approx_args: &mut VarInfos,
+        old_approx: &Enc<Approx>,
+        constr_name: &str,
+        kind: SimplificationKind,
+        degree: usize,
+    ) -> Res<()> {
+        let n_vars = match kind {
+            SimplificationKind::StaticApprox => {
+                Ok(old_approx.approxs.get(constr_name).unwrap().args.len())
+            }
+            SimplificationKind::DynamicApprox => {
+                let mut sum = 0;
+                if let Some((dtyp, generic_rtyps)) = old_approx.typ.dtyp_inspect() {
+                    let mut cache = BTreeMap::<typ::RTyp, usize>::new();
+                    for (_, arg_ptyp) in dtyp.news.get(constr_name).unwrap().iter() {
+                        let arg_rtyp = arg_ptyp.to_type(Some(generic_rtyps)).unwrap();
+                        arg_rtyp.compute_approximation_degree(&mut cache, degree)?;
+                        sum += cache.get(arg_rtyp.get()).unwrap();
+                    }
+                }
+                Ok(sum)
+            }
+            SimplificationKind::None => {
+                Err(Error::from_kind(ErrorKind::Msg(format!(
+                    "I was expecting an a simplifiable approximation"
+                ))))
+            }
+        }?;
+        for idx in 0..n_vars {
             let next_index = variables.next_index();
             let info =
                 VarInfo::new(format!("arg-{}-{idx}", constr_name), typ::int(), next_index);
             variables.push(info.clone());
             approx_args.push(info);
         }
+        Ok(())
     }
 
     fn instantiate(&self) -> Approx {
