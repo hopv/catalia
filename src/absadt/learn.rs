@@ -2,7 +2,6 @@ use super::chc::CEX;
 use super::enc::*;
 use crate::common::{smt::FullParser as Parser, Cex as Model, *};
 use crate::info::VarInfo;
-use crate::term::typ::RTyp;
 
 const CONSTRAINT_CHECK_TIMEOUT: usize = 1;
 const THRESHOLD_BLASTING: usize = 10;
@@ -30,21 +29,26 @@ impl TemplateInfo {
         Ok(())
     }
 
-    fn is_used_in_simplified_enc(&self, var_info: &VarInfo) -> bool {
+    fn is_used_in_simplified_enc(&self, var_idx: &VarIdx) -> bool {
         for (_, enc) in self.encs.iter() {
             for (_, approx) in enc.approxs.iter() {
                 match approx {
                     Template::Linear(_) => {},
-                    Template::StaticSimplification(static_approx) => {
-                        if static_approx.approx.args.contains(var_info) {
+                    Template::Simplified(approx) => {
+                        if approx.approx.args.iter().any(|var_info| *var_idx == var_info.idx) {
                             return true;
                         }
                     }
-                    Template::DynamicSimplification(dyn_approx) =>{
-                        if dyn_approx.approx.args.contains(var_info) {
-                            return true;
-                        }
-                    }
+                    // Template::StaticSimplification(static_approx) => {
+                    //     if static_approx.approx.args.iter().any(|var_info| *var_idx == var_info.idx) {
+                    //         return true;
+                    //     }
+                    // }
+                    // Template::DynamicSimplification(dyn_approx) =>{
+                    //     if dyn_approx.approx.args.iter().any(|var_info| *var_idx == var_info.idx) {
+                    //         return true;
+                    //     }
+                    // }
                 }
             }
         }
@@ -53,7 +57,7 @@ impl TemplateInfo {
 
     /// Define paramter constants
     fn define_parameters(&self, solver: &mut Solver<Parser>) -> Res<()> {
-        for var in self.parameters.iter().filter(|var_info| !self.is_used_in_simplified_enc(var_info)) {
+        for var in self.parameters.iter().filter(|var_info| !self.is_used_in_simplified_enc(&var_info.idx)) {
             solver.declare_const(&format!("v_{}", var.idx), &var.typ.to_string())?;
         }
         Ok(())
@@ -73,9 +77,21 @@ impl TemplateInfo {
         for (typ, old_enc) in encs.iter() {
             let mut approxs = BTreeMap::new();
             if old_enc.statically_simplified {
-                StaticApprox::new(&mut approxs, &mut variables, &old_enc);
+                //StaticApprox::new(&mut approxs, &mut variables, &old_enc);
+                SimplifiedApprox::insert_in_approxs(
+                    &mut approxs,
+                    &mut variables,
+                    &old_enc,
+                    SimplifiedApproxKind::StaticApprox
+                );
             } else if old_enc.dynamically_simplified {
-                DynamicApprox::new(&mut approxs, &mut variables, &old_enc);
+                SimplifiedApprox::insert_in_approxs(
+                    &mut approxs,
+                    &mut variables,
+                    &old_enc,
+                    SimplifiedApproxKind::DynamicApprox
+                );
+                // DynamicApprox::new(&mut approxs, &mut variables, &old_enc);
             }
             else {
                 Self::linear_approx(
@@ -349,16 +365,18 @@ pub struct LearnCtx<'a> {
 
 enum Template {
     Linear(LinearApprox),
-    StaticSimplification(StaticApprox),
-    DynamicSimplification(DynamicApprox),
+    Simplified(SimplifiedApprox),
+    // StaticSimplification(StaticApprox),
+    // DynamicSimplification(DynamicApprox),
 }
 
 impl Approximation for Template {
     fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
         match self {
             Template::Linear(approx) => approx.apply(arg_terms),
-            Template::StaticSimplification(approx) => approx.apply(arg_terms),
-            Template::DynamicSimplification(approx) => approx.apply(arg_terms),
+            Template::Simplified(approx) => approx.apply(arg_terms),
+            // Template::StaticSimplification(approx) => approx.apply(arg_terms),
+            // Template::DynamicSimplification(approx) => approx.apply(arg_terms),
         }
     }
 }
@@ -367,15 +385,17 @@ impl Template {
     fn instantiate(&self, model: &Model) -> Approx {
         match self {
             Template::Linear(approx) => approx.instantiate(model),
-            Template::StaticSimplification(approx) => approx.instantiate(),
-            Template::DynamicSimplification(approx) => approx.instantiate(),
+            Template::Simplified(approx) => approx.instantiate(),
+            // Template::StaticSimplification(approx) => approx.instantiate(),
+            // Template::DynamicSimplification(approx) => approx.instantiate(),
         }
     }
     fn constraint(&self) -> Option<Term> {
         match self {
             Template::Linear(approx) => approx.constraint(),
-            Template::StaticSimplification(_) => None,
-            Template::DynamicSimplification(_) => None,
+            Template::Simplified(_) => None,
+            // Template::StaticSimplification(_) => None,
+            // Template::DynamicSimplification(_) => None,
         }
     }
     fn param_range(&self) -> Option<(i64, i64)> {
@@ -387,8 +407,9 @@ impl Template {
                     None
                 }
             }
-            Template::StaticSimplification(_) => None,
-            Template::DynamicSimplification(_) => None,
+            Template::Simplified(_) => None,
+            // Template::StaticSimplification(_) => None,
+            // Template::DynamicSimplification(_) => None,
         }
     }
 }
@@ -561,7 +582,46 @@ impl LinearApprox {
     }
 }
 
-trait SimplifiedApproximation {
+#[derive(Clone, Copy)]
+enum SimplifiedApproxKind {
+    StaticApprox,
+    DynamicApprox,
+}
+
+struct SimplifiedApprox {
+    /// Existing approx
+    approx: Approx,
+    kind: SimplifiedApproxKind,
+}
+
+impl SimplifiedApprox {
+    fn insert_in_approxs (
+        new_approxs: &mut BTreeMap<String, Template>,
+        variables: &mut VarInfos,
+        old_approx: &Enc<Approx>,
+        kind: SimplifiedApproxKind,
+    ) {
+        for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
+            let mut approx_args = VarInfos::new();
+            Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
+            let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
+            let terms =
+                Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+            new_approxs.insert(
+                constr_name.clone(),
+                Template::Simplified(
+                    Self {
+                        approx: Approx {
+                            args: approx_args,
+                            terms,
+                        },
+                        kind,
+                    }
+                ),
+            );
+        }
+    }
+    
     fn shift_body_indices(new_args: &VarInfos, old_args: &VarInfos, old_terms:  &Vec<Term>) -> Vec<Term> {
         let mut new_terms = Vec::new();
         for term in old_terms.iter() {
@@ -589,7 +649,7 @@ trait SimplifiedApproximation {
         new_terms
     }
 
-    fn create_vars_info (variables: &mut VarInfos,approx_args: &mut VarInfos, old_approx: &Enc<Approx>, constr_name: &str, ) {
+    fn create_vars_info (variables: &mut VarInfos, approx_args: &mut VarInfos, old_approx: &Enc<Approx>, constr_name: &str, ) {
         for idx in 0..old_approx.approxs.get(constr_name).unwrap().args.len() {
             let next_index = variables.next_index();
             let info =
@@ -598,16 +658,13 @@ trait SimplifiedApproximation {
             approx_args.push(info);
         }
     }
+
+    fn instantiate(&self) -> Approx {
+        self.approx.clone()
+    }
 }
 
-struct StaticApprox {
-    /// Existing approx
-    approx: Approx,
-}
-
-impl SimplifiedApproximation for StaticApprox {}
-
-impl Approximation for StaticApprox {
+impl Approximation for SimplifiedApprox {
     fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
         let subst_map: VarHMap<_> = self
             .approx
@@ -624,87 +681,85 @@ impl Approximation for StaticApprox {
     }
 }
 
-impl StaticApprox {
-    fn new(
-        new_approxs: &mut BTreeMap<String, Template>,
-        variables: &mut VarInfos,
-        old_approx: &Enc<Approx>,
-    ) {
-        for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
-            let mut approx_args = VarInfos::new();
-            Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
-            let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
-            let terms =
-                Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
-            new_approxs.insert(
-                constr_name.clone(),
-                Template::StaticSimplification(Self {
-                    approx: Approx {
-                        args: approx_args,
-                        terms,
-                    },
-                }),
-            );
-        }
-    }
+// impl StaticApprox {
+//     fn new(
+//         new_approxs: &mut BTreeMap<String, Template>,
+//         variables: &mut VarInfos,
+//         old_approx: &Enc<Approx>,
+//     ) {
+//         for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
+//             let mut approx_args = VarInfos::new();
+//             Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
+//             let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
+//             let terms =
+//                 Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+//             new_approxs.insert(
+//                 constr_name.clone(),
+//                 Template::StaticSimplification(Self {
+//                     approx: Approx {
+//                         args: approx_args,
+//                         terms,
+//                     },
+//                 }),
+//             );
+//         }
+//     }
 
-    fn instantiate(&self) -> Approx {
-        self.approx.clone()
-    }
-}
+    
+// }
 
-struct DynamicApprox {
-    /// Existing approx
-    approx: Approx,
-}
+// struct DynamicApprox {
+//     /// Existing approx
+//     approx: Approx,
+// }
 
-impl SimplifiedApproximation for DynamicApprox {}
+// impl SimplifiedApproximation for DynamicApprox {}
 
-impl Approximation for DynamicApprox {
-    fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
-        let subst_map: VarHMap<_> = self
-            .approx
-            .args
-            .iter()
-            .map(|x| x.idx)
-            .zip(arg_terms.iter().cloned())
-            .collect();
-        let mut res = Vec::with_capacity(self.approx.terms.len());
-        for term in self.approx.terms.iter() {
-            res.push(term.subst(&subst_map).0);
-        }
-        res
-    }
-}
+// impl Approximation for DynamicApprox {
+//     fn apply(&self, arg_terms: &[Term]) -> Vec<Term> {
+//         let subst_map: VarHMap<_> = self
+//             .approx
+//             .args
+//             .iter()
+//             .map(|x| x.idx)
+//             .zip(arg_terms.iter().cloned())
+//             .collect();
+//         let mut res = Vec::with_capacity(self.approx.terms.len());
+//         for term in self.approx.terms.iter() {
+//             res.push(term.subst(&subst_map).0);
+//         }
+//         res
+//     }
+// }
 
-impl DynamicApprox {
-    fn new (
-        new_approxs: &mut BTreeMap<String, Template>,
-        variables: &mut VarInfos,
-        old_approx: &Enc<Approx>,
-    ) {
-        for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
-            let mut approx_args = VarInfos::new();
-            Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
-            let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
-            let terms =
-                Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
-            new_approxs.insert(
-                constr_name.clone(),
-                Template::DynamicSimplification(Self {
-                    approx: Approx {
-                        args: approx_args,
-                        terms,
-                    },
-                }),
-            );
-        }
-    }
+// impl DynamicApprox {
+//     fn new (
+//         new_approxs: &mut BTreeMap<String, Template>,
+//         variables: &mut VarInfos,
+//         old_approx: &Enc<Approx>,
+//     ) {
+//         for constr_name in old_approx.typ.dtyp_inspect().unwrap().0.news.keys() {
+//             let mut approx_args = VarInfos::new();
+//             Self::create_vars_info(variables, &mut approx_args, old_approx, constr_name);
+//             let old_approx_ref = old_approx.approxs.get(constr_name).unwrap();
+//             let terms =
+//                 Self::shift_body_indices(&approx_args, &old_approx_ref.args, &old_approx_ref.terms);
+//             new_approxs.insert(
+//                 constr_name.clone(),
+//                 Template::DynamicSimplification(Self {
+//                     approx: Approx {
+//                         args: approx_args,
+//                         terms,
+//                     },
+//                 }),
+//             );
+//         }
+//     }
 
-    fn instantiate(&self) -> Approx {
-        self.approx.clone()
-    }
-}
+//     fn instantiate(&self) -> Approx {
+//         self.approx.clone()
+//     }
+// }
 
 impl Enc<Template> {
     fn instantiate(&self, model: &Model) -> Encoder {

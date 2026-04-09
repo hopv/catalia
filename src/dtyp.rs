@@ -134,28 +134,19 @@ pub enum PartialTyp {
 }
 
 impl PartialTyp {
-    pub fn get_adt_name(&self) -> Option<String> {
-        match self {
-            PartialTyp::DTyp(name, _, _) => Some(name.clone()),
-            _ => None,
-        }
-    }
-
-    pub fn get_adt_args(&self) -> Option<Vec<&PartialTyp>> {
-        match self {
-            PartialTyp::DTyp(_, _, args) => Some(args.iter().map(|arg| arg).collect()),
-            _ => None,
-        }
-    }
-
     /// Returns the approximation degree of the current [`PartialTyp`]
     /// as a [`usize`].
     ///
+    /// The current [`PartialTyp`] is used as an argument in a ADT constructor,
+    /// in order to simplify that ADT this function compute the known
+    /// approximation degree for the current [`PartialTyp`].
+    ///
     /// # Arguments
     ///
-    /// * `generic_rtyps` - The map  with all the concrete types for the paramters.
+    /// * `generic_rtyps` - The map with all the concrete types for the
+    ///   paramters.
     /// * `system_adts` - The set of all the known ADT types in the system.
-    /// * `cache` - A map of the ADTs insepcted so far.
+    /// * `cache` - The map of the ADTs insepcted so far.
     ///
     /// # Returns
     ///
@@ -170,8 +161,8 @@ impl PartialTyp {
             PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
                 typ::RTyp::Int => Ok(1),
                 typ::RTyp::DTyp { .. } => {
-                    arg_rtyp.ensure_cached(system_adts, cache);
-                    Ok(*cache.get(arg_rtyp.get()).unwrap_or(&0))
+                    arg_rtyp.ensure_cached(system_adts, cache)?;
+                    Ok(*cache.get(arg_rtyp.get()).unwrap())
                 }
                 _ => Err(Error::from_kind(ErrorKind::Msg(format!(
                     "{self} is not an integer or a Datatype"
@@ -180,16 +171,16 @@ impl PartialTyp {
             PartialTyp::DTyp(_, _, _) => {
                 match self.to_type(Some(generic_rtyps)) {
                     Ok(arg_rtyp) => {
-                        arg_rtyp.ensure_cached(system_adts, cache);
-                    Ok(*cache.get(&arg_rtyp).unwrap_or(&0))
+                        arg_rtyp.ensure_cached(system_adts, cache)?;
+                    Ok(*cache.get(&arg_rtyp).unwrap())
                     }
-                    Err((_, msg)) =>  Err(Error::from_kind(ErrorKind::Msg(msg))),
+                    Err((_, msg)) => Err(Error::from_kind(ErrorKind::Msg(msg))),
                 }
             }
             PartialTyp::Param(idx) => {
                 let param_rtyp = generic_rtyps[*idx].get();
-                param_rtyp.ensure_cached(system_adts, cache);
-                Ok(*cache.get(param_rtyp).unwrap_or(&0))
+                param_rtyp.ensure_cached(system_adts, cache)?;
+                Ok(*cache.get(param_rtyp).unwrap())
             }
             _ => Err(Error::from_kind(ErrorKind::Msg(format!(
                 "{self} partial type not supported"
@@ -1517,4 +1508,31 @@ fn dtyp_write_dec() {
 ) )\n\
         "
     )
+}
+
+#[test]
+fn dtyp_arg_degree() -> Res<()> {
+    let mut dtyp_tup_int = RDTyp::new("tup_int");
+    dtyp_tup_int.add_constructor(
+        "tup",
+        vec![
+            ("first".to_string(), PartialTyp::Typ(typ::int())),
+            ("second".to_string(), PartialTyp::Typ(typ::int())),
+            ("third".to_string(), PartialTyp::Typ(typ::int())),
+        ],
+    )?;
+    let typ_tup_int = typ::dtyp(DTyp::new(dtyp_tup_int), vec![].into());
+    let ptyp = PartialTyp::Typ(typ_tup_int.clone());
+    let mut typ_set = BTreeSet::new();
+    typ_set.insert(typ_tup_int.clone());
+    typ_set.insert(typ::int());
+    assert_eq!(
+        3,
+        ptyp.degree_of_arg(
+            &TPrmMap::new(),
+            &typ_set,
+            &mut BTreeMap::<typ::RTyp, usize>::new()
+        )?
+    );
+    Ok(())
 }
