@@ -187,7 +187,7 @@ impl RTyp {
     /// (declare-datatypes ((list 0)) (((nil ) (cons  (head Nat) (tail list)))))
     /// ```
     /// The method returns
-    /// ```
+    /// ```text
     /// {"list", "Nat"}
     /// ```
     pub fn dtyp_typs_in_news(
