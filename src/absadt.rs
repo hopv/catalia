@@ -90,8 +90,7 @@ fn initialize_dtyp(typ: Typ, encs: &mut BTreeMap<Typ, Encoder>) -> Res<()> {
         typ: typ.clone(),
         n_params,
         approxs,
-        statically_simplified: false,
-        dynamically_simplified: false,
+        simplification: enc::SimplificationKind::None
     };
     let r = encs.insert(typ, enc);
     debug_assert!(r.is_none());

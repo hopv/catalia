@@ -124,6 +124,13 @@ impl Approximation for Approx {
     }
 }
 
+ #[derive(Debug, Clone, Copy)]
+pub enum SimplificationKind {
+    None,
+    StaticApprox,
+    DynamicApprox,
+}
+
 /// Enc is an encoding of ADT terms to integer expressions.
 ///
 /// Assumption: typ is a monomorphic type.
@@ -133,8 +140,7 @@ pub struct Enc<Approx> {
     pub typ: Typ,
     pub n_params: usize,
     pub approxs: BTreeMap<String, Approx>,
-    pub statically_simplified: bool,
-    pub dynamically_simplified: bool,
+    pub simplification: SimplificationKind,
 }
 
 impl<Approx: std::fmt::Display> std::fmt::Display for Enc<Approx> {
@@ -193,8 +199,7 @@ impl<A: Approximation> Enc<A> {
             typ: ilist_typ,
             n_params: 1,
             approxs,
-            statically_simplified: false,
-            dynamically_simplified: false,
+            simplification: SimplificationKind::None,
         }
     }
     fn get_ith_enc_rdf_name(&self, i: usize) -> String {
