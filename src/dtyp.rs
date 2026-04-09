@@ -133,6 +133,62 @@ pub enum PartialTyp {
     Param(TPrmIdx),
 }
 
+impl PartialTyp {
+    /// Returns the approximation degree of the current [`PartialTyp`]
+    /// as a [`usize`].
+    ///
+    /// The current [`PartialTyp`] is used as an argument in a ADT constructor,
+    /// in order to simplify that ADT this function compute the known
+    /// approximation degree for the current [`PartialTyp`].
+    ///
+    /// # Arguments
+    ///
+    /// * `generic_rtyps` - The map with all the concrete types for the
+    ///   paramters.
+    /// * `cache` - The map of the ADTs insepcted so far.
+    /// * `degree` - The approximation degree currently in use.
+    ///
+    /// # Returns
+    ///
+    /// A [`usize`] representing the initial approximation degree of [`PartialTyp`].
+    pub fn degree_of_arg(
+        &self,
+        generic_rtyps: &TPrmMap<Typ>,
+        cache: &mut BTreeMap<typ::RTyp, usize>,
+        degree: usize,
+    ) -> Res<usize> {
+        match self {
+            PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
+                typ::RTyp::Int => Ok(1),
+                typ::RTyp::DTyp { .. } => {
+                    arg_rtyp.ensure_cached(cache, degree)?;
+                    Ok(*cache.get(arg_rtyp.get()).unwrap())
+                }
+                _ => Err(Error::from_kind(ErrorKind::Msg(format!(
+                    "{self} is not an integer or a Datatype"
+                )))),
+            },
+            PartialTyp::DTyp(_, _, _) => {
+                match self.to_type(Some(generic_rtyps)) {
+                    Ok(arg_rtyp) => {
+                        arg_rtyp.ensure_cached(cache, degree)?;
+                    Ok(*cache.get(&arg_rtyp).unwrap())
+                    }
+                    Err((_, msg)) => Err(Error::from_kind(ErrorKind::Msg(msg))),
+                }
+            }
+            PartialTyp::Param(idx) => {
+                let param_rtyp = generic_rtyps[*idx].get();
+                param_rtyp.ensure_cached(cache, degree)?;
+                Ok(*cache.get(param_rtyp).unwrap())
+            }
+            _ => Err(Error::from_kind(ErrorKind::Msg(format!(
+                "{self} partial type not supported"
+            )))),
+        }
+    }
+}
+
 impl From<Typ> for PartialTyp {
     fn from(typ: Typ) -> Self {
         PartialTyp::Typ(typ)
@@ -1452,4 +1508,28 @@ fn dtyp_write_dec() {
 ) )\n\
         "
     )
+}
+
+#[test]
+fn dtyp_arg_degree() -> Res<()> {
+    let mut dtyp_tup_int = RDTyp::new("tup_int");
+    dtyp_tup_int.add_constructor(
+        "tup",
+        vec![
+            ("first".to_string(), PartialTyp::Typ(typ::int())),
+            ("second".to_string(), PartialTyp::Typ(typ::int())),
+            ("third".to_string(), PartialTyp::Typ(typ::int())),
+        ],
+    )?;
+    let typ_tup_int = typ::dtyp(DTyp::new(dtyp_tup_int), vec![].into());
+    let ptyp = PartialTyp::Typ(typ_tup_int.clone());
+    assert_eq!(
+        3,
+        ptyp.degree_of_arg(
+            &TPrmMap::new(),
+            &mut BTreeMap::<typ::RTyp, usize>::new(),
+            1
+        )?
+    );
+    Ok(())
 }

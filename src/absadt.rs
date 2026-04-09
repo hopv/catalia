@@ -37,6 +37,7 @@
 //! ## Some Assumptions
 //! - set of ADT does not change from start to end during `work`
 //!   - they are defined as the global hashconsed objects
+use adt_graph::{ADTDependencyGraph, Category};
 use chc::AbsInstance;
 use enc::Encoder;
 
@@ -45,6 +46,7 @@ use crate::info::{Pred, VarInfo};
 
 use crate::unsat_core::UnsatRes;
 
+mod adt_graph;
 mod catamorphism_parser;
 mod chc;
 mod chc_solver;
@@ -65,6 +67,7 @@ pub struct AbsConf<'original> {
     pub encs: BTreeMap<Typ, Encoder>,
     epoch: usize,
     profiler: &'original Profiler,
+    dependency_graph: adt_graph::ADTDependencyGraph,
 }
 
 fn initialize_dtyp(typ: Typ, encs: &mut BTreeMap<Typ, Encoder>) -> Res<()> {
@@ -87,6 +90,7 @@ fn initialize_dtyp(typ: Typ, encs: &mut BTreeMap<Typ, Encoder>) -> Res<()> {
         typ: typ.clone(),
         n_params,
         approxs,
+        simplification: enc::SimplificationKind::None
     };
     let r = encs.insert(typ, enc);
     debug_assert!(r.is_none());
@@ -121,7 +125,7 @@ impl<'original> AbsConf<'original> {
         let cexs = Vec::new();
         let solver = conf.solver.spawn("absadt", Parser, original)?;
         let encs = BTreeMap::new();
-
+        let dependency_graph = adt_graph::ADTDependencyGraph::default();
         Ok(AbsConf {
             instance,
             cexs,
@@ -129,7 +133,18 @@ impl<'original> AbsConf<'original> {
             encs,
             epoch: 0,
             profiler,
+            dependency_graph,
         })
+    }
+
+    fn flatten_non_recursive_adt(&mut self) -> Res<()> {
+        self.dependency_graph.flatten_adt(&mut self.encs, Category::Static)?;
+        self.dependency_graph.flatten_adt(&mut self.encs, Category::Dynamic)?;
+        log_debug!("After the flattening");
+        for (typ, enc) in self.encs.iter() {
+            log_debug!("{} {}", typ, enc);
+        }
+        Ok(())
     }
 
     fn initialize_encs(&mut self) -> Res<()> {
@@ -147,6 +162,7 @@ impl<'original> AbsConf<'original> {
             }
             initialize_encs_for_term(&c.lhs_term, &mut self.encs)?;
         }
+        self.dependency_graph = ADTDependencyGraph::new(&self.encs)?;
         Ok(())
     }
 
@@ -264,8 +280,8 @@ impl<'original> AbsConf<'original> {
 
         // The approximation map
         if let Some(catamorphism_str) = approximation_file {
-            let parsed_approximations =  catamorphism_parser::parse_catamorphism(catamorphism_str)?;
-			log_info!("Testing the input approximations");
+            let parsed_approximations = catamorphism_parser::parse_catamorphism(catamorphism_str)?;
+            log_info!("Testing the input approximations");
             self.encs =
                 catamorphism_parser::build_encoding_from_approx(parsed_approximations, &self.encs)?;
             let encoded = self.encode();
@@ -282,6 +298,8 @@ impl<'original> AbsConf<'original> {
                 }
             }
         }
+
+        self.flatten_non_recursive_adt()?;
 
         let r = loop {
             self.epoch += 1;
@@ -308,10 +326,7 @@ impl<'original> AbsConf<'original> {
 }
 
 impl<'a> AbsConf<'a> {
-    pub fn encode_clause(
-        &self,
-        c: &chc::AbsClause
-    ) -> chc::AbsClause {
+    pub fn encode_clause(&self, c: &chc::AbsClause) -> chc::AbsClause {
         let ctx = enc::EncodeCtx::new(&self.encs);
         let (new_vars, introduced) = enc::tr_varinfos(&self.encs, &c.vars);
         let encode_var = |_, var| {
@@ -402,8 +417,7 @@ impl<'a> AbsConf<'a> {
         let head_argument = term::dtyp_new(
             typ.clone(),
             constr_name,
-            vars
-                .iter()
+            vars.iter()
                 .map(|v| term::var(v.idx, v.typ.clone()))
                 .collect(),
         );
@@ -418,7 +432,7 @@ impl<'a> AbsConf<'a> {
                         args: args.into(),
                     };
                     lhs_preds.push(app);
-                },
+                }
                 None => {
                     assert!(!var.typ.is_dtyp());
                 }
@@ -459,10 +473,7 @@ impl<'a> AbsConf<'a> {
         for (typ, _) in self.encs.iter() {
             let pi = preds.next_index();
             let p = Pred::new(
-                format!(
-                    "encoder_pred_{}",
-                    enc::to_valid_symbol(typ.to_string()),
-                ),
+                format!("encoder_pred_{}", enc::to_valid_symbol(typ.to_string()),),
                 pi,
                 vec![typ.clone()].into(),
             );
@@ -504,7 +515,7 @@ impl<'a> AbsConf<'a> {
                 let app = chc::PredApp {
                     pred: *approx_pred,
                     args: args.into(),
-                    };
+                };
                 lhs_preds.push(app);
             }
             res.push(chc::AbsClause {
@@ -525,14 +536,9 @@ impl<'a> AbsConf<'a> {
         clauses.extend(clauses2);
 
         // 2. encode the clauses by using the current catamorphism
-        let preds = preds
-            .iter()
-            .map(|p| self.encode_pred(p))
-            .collect();
+        let preds = preds.iter().map(|p| self.encode_pred(p)).collect();
 
-        let clauses: Vec<_> = clauses.iter()
-            .map(|c| self.encode_clause(c))
-            .collect();
+        let clauses: Vec<_> = clauses.iter().map(|c| self.encode_clause(c)).collect();
 
         self.instance.clone_with_clauses(clauses, preds)
     }

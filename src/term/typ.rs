@@ -2,7 +2,10 @@
 
 use hashconsing::{HConsed, HashConsign};
 
-use crate::{common::*, dtyp::TPrmMap};
+use crate::{
+    common::*,
+    dtyp::{PartialTyp, RDTyp, TPrmMap},
+};
 
 hashconsing::consign! {
   /// Type factory.
@@ -168,6 +171,127 @@ impl RTyp {
         }
     }
 
+    /// Returns the set of depth 1 dependencies for the current [`RTyp`].
+    ///
+    /// *depth 1 dependencies* encompasses only the types used in the [`RTyp`]
+    /// constructors.
+    ///
+    /// # Returns
+    ///
+    /// A [`BTreeSet<Typ>`] containing all the types present in the current
+    /// [`RTyp`] constructors.
+    ///
+    /// # Example
+    /// Give the following type as the current [`RTyp`]
+    /// ```text
+    /// (declare-datatypes ((list 0)) (((nil ) (cons  (head Nat) (tail list)))))
+    /// ```
+    /// The method returns
+    /// ```text
+    /// {"list", "Nat"}
+    /// ```
+    pub fn dtyp_typs_in_news(
+        &self,
+    ) -> Res<BTreeSet<Typ>> {
+        let mut dependencies = BTreeSet::new();
+        if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            for (_, args) in dtyp.news.iter() {
+                for (_, arg_ptyp) in args.iter() {
+                    let arg_rtyp = arg_ptyp.to_type(Some(generic_rtyps)).unwrap();
+                    match arg_rtyp.get() {
+                        RTyp::DTyp { dtyp: _, prms: _ } => {
+                            dependencies.insert(arg_rtyp.clone());
+                        }
+                        RTyp::Int => {}
+                        _ => {
+                            return Err(Error::from_kind(ErrorKind::Msg(format!(
+                                "I was expecting an ADT or an Int, found {arg_rtyp}"
+                            ))));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(dependencies)
+    }
+
+    pub fn is_recursive(&self,) -> Res<bool> {
+        let mut stack = vec![self.clone()];
+        let mut already_visted = BTreeSet::new();
+        while let Some(typ) = stack.pop() {
+            already_visted.insert(typ.clone());
+            for dep in typ.dtyp_typs_in_news()?.iter() {
+                if dep.get() == self {
+                    return Ok(true);
+                }
+                if !already_visted.contains(dep.get()) {
+                    stack.push(dep.get().clone());
+                }
+            }
+        }
+        return Ok(false);
+    }
+
+    /// Returns the approximation degree of the current **simplifiable** [`RTyp`]
+    /// as a [`usize`].
+    ///
+    /// # Arguments
+    ///
+    /// * `cache` - A [`BTreeMap<Self, usize>`] of the ADTs insepcted so far.
+    /// * `degree` - A [`usize`] containing the current approximation degree in
+    ///   use
+    ///
+    /// # Returns
+    ///
+    /// A [`BTreeMap<Self, usize>`] called `cache` containing the initial
+    /// approximation degree of [`RTyp`].
+    pub fn compute_approximation_degree(
+        &self,
+        cache: &mut BTreeMap<Self, usize>,
+        degree: usize,
+    ) -> Res<()> {
+        if cache.contains_key(self) {
+            return Ok(());
+        }
+        let approx_degree = if self.is_recursive()? {
+            degree
+        }
+        else if let Some((dtyp, generic_rtyps)) = self.dtyp_inspect() {
+            let constructor_degree = dtyp
+                .news
+                .iter()
+                .map(|(_, args)| {
+                    args.iter()
+                        .map(|(_, arg_ptyp)| arg_ptyp.degree_of_arg(generic_rtyps, cache, degree))
+                        .sum::<Res<usize>>()
+                })
+                .collect::<Res<Vec<usize>>>()?
+                .into_iter()
+                .max()
+                .unwrap();
+                                 // Constructors discriminator
+            constructor_degree + usize::from(dtyp.news.len() > 1)
+        } else {
+            1
+        };
+
+        cache.insert(self.clone(), approx_degree);
+
+        Ok(())
+    }
+
+    /// Ensures [`RTtyp`] has an entry in `cache`, recursing if necessary.
+    pub(crate) fn ensure_cached(&self, cache: &mut BTreeMap<RTyp, usize>, degree: usize,) -> Res<()> {
+        if !cache.contains_key(self) {
+            if self.is_recursive()? {
+                cache.insert(self.clone(), degree);
+            } else {
+                self.compute_approximation_degree(cache, degree)?;
+            }
+        }
+        Ok(())
+    }
+    
     /// Checks a type is legal.
     pub fn check(&self) -> Res<()> {
         match self {
