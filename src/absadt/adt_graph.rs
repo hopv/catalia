@@ -12,17 +12,61 @@ pub enum Category {
     Static, Dynamic
 }
 
+/// Struct to manage all the type dependencies.
+///
+/// It introduces the concept of *statically simplifiable* and *dynamically
+/// simplifiable* for a given type.
+/// # Definitions
+/// ## Statically simplifiable
+/// An ADT is said statically simplifiable when it is not recursive and the
+/// only dependencies are:
+/// - None or
+/// - A SMT primitive type (Int) or
+/// - Another statically simplifiable ADT
+///
+/// Its approximation is fixed before the CEGAR loop and remains the same
+/// throughout the whole execution.
+/// ## Dynamically simplifiable
+/// An ADT is said dynamically simplifiable:
+/// - There is no loop (even with size > 1) into itself and
+/// - It is not statically simplifiable
+///
+/// If an ADT is *dynamically simplifiable* then its approximation degree and
+/// its arguments are adjusted during the CEGAR loop according to the dependency
+/// approximation degree.
+/// # Examples
+/// ## Statically simplifiable
+/// ```text
+/// (declare-datatypes
+///  ( (Color 0) )
+///  ( ( (Red) (Green) (Blue) (Yellow) ) ))
+/// ```
+/// Is statically simplified to:
+/// ```text
+/// Red    -> 1
+/// Green  -> 2
+/// Blue   -> 3
+/// Yellow -> 4
+/// ```
+/// ## Dynamically simplifiable
+/// ```text
+/// (declare-datatypes
+///  ( (Tuple 0) )
+///  ( ( (TupColor  (first Color) (second Color)) ) ))
+/// ```
+/// Is statically simplified to:
+/// ```text
+/// TupColor (first, second) -> (first, second)
+/// ```
+/// If the approximation degree for `Color` was 2 then, the simplification for
+/// `Tuple` would have been:
+/// ```text
+/// TupColor (first_1, first_2, second_1, second_2) -> (first_1, first_2, second_1, second_2)
+/// ```
 #[derive(Default)]
 pub struct ADTDependencyGraph {
     dependencies: BTreeMap<Typ, BTreeSet<Typ>>,
-    // An ADT is said statically simplifiable when it is not recursive and the
-    // only dependencies are:
-    // - None or
-    // - A SMT primitive type (Int) or
-    // - Another statically simplifiable ADT
     statically_simplifiable: BTreeSet<Typ>,
-    // An ADT is said dynamically simplifiable when there is no loop (any loop size)
-    // into itself and it is not statically simplifiable
     dynamically_simplifiable: BTreeSet<Typ>,
     initial_approx_degrees: BTreeMap<RTyp, usize>,
 }
