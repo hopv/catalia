@@ -145,8 +145,8 @@ impl PartialTyp {
     ///
     /// * `generic_rtyps` - The map with all the concrete types for the
     ///   paramters.
-    /// * `system_adts` - The set of all the known ADT types in the system.
     /// * `cache` - The map of the ADTs insepcted so far.
+    /// * `degree` - The approximation degree currently in use.
     ///
     /// # Returns
     ///
@@ -154,14 +154,14 @@ impl PartialTyp {
     pub fn degree_of_arg(
         &self,
         generic_rtyps: &TPrmMap<Typ>,
-        system_adts: &BTreeSet<Typ>,
         cache: &mut BTreeMap<typ::RTyp, usize>,
+        degree: usize,
     ) -> Res<usize> {
         match self {
             PartialTyp::Typ(arg_rtyp) => match arg_rtyp.get() {
                 typ::RTyp::Int => Ok(1),
                 typ::RTyp::DTyp { .. } => {
-                    arg_rtyp.ensure_cached(system_adts, cache)?;
+                    arg_rtyp.ensure_cached(cache, degree)?;
                     Ok(*cache.get(arg_rtyp.get()).unwrap())
                 }
                 _ => Err(Error::from_kind(ErrorKind::Msg(format!(
@@ -171,7 +171,7 @@ impl PartialTyp {
             PartialTyp::DTyp(_, _, _) => {
                 match self.to_type(Some(generic_rtyps)) {
                     Ok(arg_rtyp) => {
-                        arg_rtyp.ensure_cached(system_adts, cache)?;
+                        arg_rtyp.ensure_cached(cache, degree)?;
                     Ok(*cache.get(&arg_rtyp).unwrap())
                     }
                     Err((_, msg)) => Err(Error::from_kind(ErrorKind::Msg(msg))),
@@ -179,7 +179,7 @@ impl PartialTyp {
             }
             PartialTyp::Param(idx) => {
                 let param_rtyp = generic_rtyps[*idx].get();
-                param_rtyp.ensure_cached(system_adts, cache)?;
+                param_rtyp.ensure_cached(cache, degree)?;
                 Ok(*cache.get(param_rtyp).unwrap())
             }
             _ => Err(Error::from_kind(ErrorKind::Msg(format!(
@@ -1523,15 +1523,12 @@ fn dtyp_arg_degree() -> Res<()> {
     )?;
     let typ_tup_int = typ::dtyp(DTyp::new(dtyp_tup_int), vec![].into());
     let ptyp = PartialTyp::Typ(typ_tup_int.clone());
-    let mut typ_set = BTreeSet::new();
-    typ_set.insert(typ_tup_int.clone());
-    typ_set.insert(typ::int());
     assert_eq!(
         3,
         ptyp.degree_of_arg(
             &TPrmMap::new(),
-            &typ_set,
-            &mut BTreeMap::<typ::RTyp, usize>::new()
+            &mut BTreeMap::<typ::RTyp, usize>::new(),
+            1
         )?
     );
     Ok(())
