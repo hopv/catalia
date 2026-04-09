@@ -78,14 +78,14 @@ impl TemplateInfo {
             let mut approxs = BTreeMap::new();
             if old_enc.statically_simplified {
                 //StaticApprox::new(&mut approxs, &mut variables, &old_enc);
-                SimplifiedApprox::insert_in_approxs(
+                SimplifiedApprox::simplified_approx(
                     &mut approxs,
                     &mut variables,
                     &old_enc,
                     SimplifiedApproxKind::StaticApprox
                 );
             } else if old_enc.dynamically_simplified {
-                SimplifiedApprox::insert_in_approxs(
+                SimplifiedApprox::simplified_approx(
                     &mut approxs,
                     &mut variables,
                     &old_enc,
@@ -595,7 +595,7 @@ struct SimplifiedApprox {
 }
 
 impl SimplifiedApprox {
-    fn insert_in_approxs (
+    fn simplified_approx (
         new_approxs: &mut BTreeMap<String, Template>,
         variables: &mut VarInfos,
         old_approx: &Enc<Approx>,
