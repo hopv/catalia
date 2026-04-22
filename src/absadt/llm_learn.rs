@@ -445,11 +445,14 @@ fn summarise_response(response: &str) -> String {
 fn build_cex_feedback(cex: &CEX) -> String {
     format!(
         "## CEX to refute\n\n\
-The catamorphism you proposed above did NOT refute this spurious CEX:\n\n\
+**IMPORTANT: An SMT solver has mechanically verified that your catamorphism above \
+does NOT refute the CEX below. This is not a matter of re-analysis — do not resubmit \
+the same catamorphism. You MUST propose a strictly different one.**\n\n\
 ```\n{}\n```\n\n\
 This formula must be **unsatisfiable** after substituting your catamorphism \
-(i.e., replacing each ADT equality with the corresponding integer equalities).\n\n\
-**Your task:** propose a new catamorphism that makes it unsatisfiable. ",
+(i.e., replacing each ADT equality with the corresponding integer equalities). \
+Your previous catamorphism left it satisfiable.\n\n\
+**Your task:** propose a strictly different catamorphism that makes it unsatisfiable.",
         cex
     )
 }
