@@ -66,13 +66,7 @@ impl Eldarica {
         let mut line = String::new();
         self.stdout.read_to_string(&mut line)?;
 
-        if line.starts_with("sat") {
-            Ok(true)
-        } else if line.starts_with("unsat") {
-            Ok(false)
-        } else {
-            bail!("Unexpected output: {}", line)
-        }
+        parse_check_sat_output(&line)
     }
 
     /// Check satisfiability and return counterexample if unsat
@@ -83,14 +77,30 @@ impl Eldarica {
         let mut output = String::new();
         self.stdout.read_to_string(&mut output)?;
 
-        if output.starts_with("sat") {
+        let trimmed = output.trim_start();
+        if trimmed.starts_with("sat") {
             Ok(either::Left(()))
-        } else if output.starts_with("unsat") {
+        } else if trimmed.starts_with("unsat") {
             let proof = eld_cex::parse_eldarica_cex(&output)?;
             Ok(either::Right(proof))
+        } else if trimmed.starts_with("unknown") {
+            unknown!("Eldarica returned unknown: {}", trimmed.trim())
         } else {
             bail!("Unexpected output from Eldarica: {}", output)
         }
+    }
+}
+
+fn parse_check_sat_output(output: &str) -> Res<bool> {
+    let trimmed = output.trim_start();
+    if trimmed.starts_with("sat") {
+        Ok(true)
+    } else if trimmed.starts_with("unsat") {
+        Ok(false)
+    } else if trimmed.starts_with("unknown") {
+        unknown!("Eldarica returned unknown: {}", trimmed.trim())
+    } else {
+        bail!("Unexpected output: {}", output)
     }
 }
 
