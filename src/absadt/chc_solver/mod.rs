@@ -65,6 +65,8 @@ fn portfolio_sequential<I>(
 where
     I: Instance,
 {
+    let mut eldarica_error = false;
+
     if !conf.no_eldarica {
         match run_eldarica(instance, Some(CHECK_CHC_TIMEOUT), false, None) {
             // Eldarica determined SAT
@@ -72,6 +74,10 @@ where
             // Eldarica determined UNSAT
             Ok(false) =>
                 return Ok(either::Right((hyper_res::ResolutionProof::new(), false))),
+            Err(err) if err.is_unknown() => {
+                log_info!("Eldarica returned unknown; trying next CHC solver");
+                eldarica_error = true;
+            },
             Err(err) => {
                 log_info!("Eldarica failed with {}", err);
                 return Ok(either::Right((hyper_res::ResolutionProof::new(), true)));
@@ -96,7 +102,7 @@ where
         }
     }
 
-    Ok(either::Right((hyper_res::ResolutionProof::new(), false)))
+    Ok(either::Right((hyper_res::ResolutionProof::new(), eldarica_error)))
 }
 
 /// Coordinates SIGKILL cancellation of solver process groups.
