@@ -110,3 +110,9 @@ We welcome any help, please the [contribution guidelines](https://github.com/hop
 # License
 
 `catalia` is released under the [Apache 2 license](./LICENSE.md). Please note in particular that the [`NOTICE.md`](./NOTICE.md) file from this repository must be available if you redistribute `catalia` in a source or binary format.
+
+
+# Contributors
+
+- Hiroyuki Katsura
+- Alessio Blascovich
