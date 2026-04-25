@@ -1,14 +1,14 @@
 [package]
-name = "hoice"
-version = "1.10.0"
-authors = ["Adrien Champion <adrien.champion@email.com>"]
-description = "A ICE-based Horn clause solver."
-homepage = "https://github.com/hopv/hoice"
-repository = "https://github.com/hopv/hoice"
+name = "catalia"
+version = "1.2.0"
+authors = ["Hiroyuki Katsura <Hiroyuki.Katsura@cl.cam.ac.uk>"]
+description = "Solver for Constrained Horn Clauses over Algebraic Data Types"
+homepage = "https://github.com/hopv/catalia"
+repository = "https://github.com/hopv/catalia"
 readme = "README.md"
 categories = ["science"]
 keywords = ["machine learning", "verification", "proof"]
-license = "MIT"
+license = "Apache-2.0"
 edition = "2021"
 
 [[bin]]
