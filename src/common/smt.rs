@@ -949,9 +949,31 @@ impl<'a> ModelParser<FPVar, Typ, FPVal, &'a str> for FullParser {
         self,
         input: &'a str,
         _id: &FPVar,
-        _params: &[(FPVar, Typ)],
-        _out: &Typ,
+        params: &[(FPVar, Typ)],
+        out: &Typ,
     ) -> SmtRes<FPVal> {
+        // Z3 prints a nullary datatype constructor as a bare symbol.  The
+        // generic term parser cannot infer its (possibly recursive) result
+        // type in this model-parsing context, so use the declared model
+        // result type to recognize it directly.
+        let bare = input.trim();
+        if params.is_empty() {
+            if let Some((datatype, _)) = out.dtyp_inspect() {
+                if datatype
+                    .news
+                    .get(bare)
+                    .map(|arguments| arguments.is_empty())
+                    .unwrap_or(false)
+                {
+                    return Ok(FPVal::Val(val::dtyp_new(
+                        out.clone(),
+                        bare.into(),
+                        Vec::new(),
+                    )));
+                }
+            }
+        }
+
         let mut cxt = crate::parse::ParserCxt::new();
         let dummy_profiler = Profiler::new();
         let mut parser = cxt.parser(input, 0, &dummy_profiler);
@@ -1000,6 +1022,26 @@ impl<'a> ModelParser<FPVar, Typ, FPVal, &'a str> for FullParser {
             debug_assert! { ! negated }
 
             Ok(FPVal::Val(val::bool(val)))
+        } else if out.is_dtyp() && params.is_empty() {
+            match parser.term_opt(&vec![].into(), &BTreeMap::new(), &Instance::new()) {
+                Ok(Some(term)) => match term.eval(&()) {
+                    Ok(val) => Ok(FPVal::Val(val)),
+                    Err(error) => bail!(
+                        "parsed datatype model term `{}` but could not evaluate it: {}",
+                        term,
+                        error
+                    ),
+                },
+                Ok(None) => bail!(
+                    "could not parse datatype model value `{}` as a term",
+                    input
+                ),
+                Err(error) => bail!(
+                    "could not parse datatype model value `{}`: {}",
+                    input,
+                    error
+                ),
+            }
         } else if let Ok(Some(term)) =
             parser.term_opt(&vec![].into(), &BTreeMap::new(), &Instance::new())
         {
@@ -1040,6 +1082,59 @@ impl<'a> ModelParser<FPVar, Typ, FPVal, &'a str> for FullParser {
             debug_assert! { ! negated }
             Ok(FPVal::FunDef(input.into()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_nullary_datatype_model_value() {
+        dtyp::create_list_dtyp();
+        let list = typ::dtyp(
+            dtyp::get("List").expect("List datatype should exist"),
+            vec![typ::int()].into(),
+        );
+
+        let parsed = ModelParser::parse_value(
+            FullParser,
+            "nil",
+            &FPVar::Var(0.into()),
+            &[],
+            &list,
+        )
+        .expect("nil should parse as a datatype value");
+
+        match parsed {
+            FPVal::Val(value) => {
+                let (_, constructor, arguments) = value
+                    .dtyp_inspect()
+                    .expect("parsed value should be a datatype constructor");
+                assert_eq!(constructor, "nil");
+                assert!(arguments.is_empty());
+            }
+            other => panic!("nil was not parsed as a value: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reports_invalid_datatype_model_value() {
+        dtyp::create_list_dtyp();
+        let list = typ::dtyp(
+            dtyp::get("List").expect("List datatype should exist"),
+            vec![typ::int()].into(),
+        );
+
+        let result = ModelParser::parse_value(
+            FullParser,
+            "(insert)",
+            &FPVar::Var(0.into()),
+            &[],
+            &list,
+        );
+
+        assert!(result.is_err(), "invalid datatype value should be rejected");
     }
 }
 
