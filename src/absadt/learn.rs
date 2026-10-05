@@ -1161,9 +1161,13 @@ impl<'a> LearnCtx<'a> {
                 }
             }
             // 2. If not, learn something new
-            *self.original_encs = self
-                .refine_enc(&original_enc)?
-                .expect("No appropriate template found");
+            *self.original_encs = match self.refine_enc(&original_enc)? {
+                Some(new_encs) => new_encs,
+                // No template of the schedule refutes the counterexample: the
+                // candidate space is exhausted, so give up with "unknown"
+                // instead of panicking.
+                None => unknown!("No appropriate template found"),
+            };
 
             log_debug!("new_encs: ");
             for (k, v) in self.original_encs.iter() {
