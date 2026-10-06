@@ -375,22 +375,7 @@ fn test_check_not_boolean_use() {
     assert!(!check_not_boolean_use_inner(&neg));
 }
 
-fn introduce_dual<'a>(instance: &mut AbsInstance<'a>) -> Vec<HashMap<VarIdx, VarIdx>> {
-    let mut dual_var_map = Vec::new();
-    for c in instance.clauses.iter_mut() {
-        let mut var_map = HashMap::new();
-        for v in c.vars.iter() {
-            if v.typ.is_bool() {
-                var_map.insert(v.idx, c.vars.next_index() + var_map.len());
-            }
-        }
-        for (k, v) in var_map.iter() {
-            let name = format!("dual-{}", k);
-            let info = VarInfo::new(name, typ::bool(), *v);
-            c.vars.push(info)
-        }
-        dual_var_map.push(var_map)
-    }
+fn extend_bool_pred_signatures<'a>(instance: &mut AbsInstance<'a>) {
     for p in instance.preds.iter_mut() {
         let mut new_sig = VarMap::new();
         for x in p.sig.iter() {
@@ -401,11 +386,79 @@ fn introduce_dual<'a>(instance: &mut AbsInstance<'a>) -> Vec<HashMap<VarIdx, Var
         }
         p.sig = new_sig.into();
     }
-    dual_var_map
 }
 
-fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<VarIdx, VarIdx>>) {
-    assert_eq!(varmap.len(), instance.clauses.len());
+fn paired_bool_vars(c: &AbsClause) -> HashSet<VarIdx> {
+    let mut paired = HashSet::new();
+    if let Some((_, args)) = &c.rhs {
+        for arg in args {
+            if c.vars[*arg].typ.is_bool() {
+                paired.insert(*arg);
+            }
+        }
+    }
+    paired
+}
+
+fn local_bool_vars(c: &AbsClause, paired: &HashSet<VarIdx>) -> Vec<VarIdx> {
+    c.vars
+        .iter()
+        .filter(|v| v.typ.is_bool() && !paired.contains(&v.idx))
+        .map(|v| v.idx)
+        .collect()
+}
+
+fn instantiate_local_bools(c: &AbsClause, locals: &[VarIdx], valuation: usize) -> AbsClause {
+    let mut subst = VarHMap::new();
+    for (offset, var) in locals.iter().enumerate() {
+        let value = ((valuation >> offset) & 1) == 1;
+        subst.insert(*var, term::bool(value));
+    }
+
+    let lhs_term = c.lhs_term.subst(&subst).0;
+    let lhs_preds = c
+        .lhs_preds
+        .iter()
+        .map(|lhs_pred| {
+            let args: VarMap<_> = lhs_pred
+                .args
+                .iter()
+                .map(|arg| arg.subst(&subst).0)
+                .collect();
+            chc::PredApp {
+                pred: lhs_pred.pred,
+                args: args.into(),
+            }
+        })
+        .collect();
+
+    AbsClause {
+        lhs_preds,
+        lhs_term,
+        rhs: c.rhs.clone(),
+        vars: c.vars.clone(),
+    }
+}
+
+fn introduce_duals_for_paired(
+    c: &mut AbsClause,
+    paired: &HashSet<VarIdx>,
+) -> HashMap<VarIdx, VarIdx> {
+    let mut var_map = HashMap::new();
+    for v in c.vars.iter() {
+        if paired.contains(&v.idx) {
+            var_map.insert(v.idx, c.vars.next_index() + var_map.len());
+        }
+    }
+    for (k, v) in var_map.iter() {
+        let name = format!("dual-{}", k);
+        let info = VarInfo::new(name, typ::bool(), *v);
+        c.vars.push(info)
+    }
+    var_map
+}
+
+fn remove_not_bool_clause(c: &AbsClause, env: &HashMap<VarIdx, VarIdx>) -> AbsClause {
     // Takes a negation of a given term using mapping of dual variables
     fn neg(t: &term::Term, env: &HashMap<VarIdx, VarIdx>) -> term::Term {
         match t.get() {
@@ -413,6 +466,7 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
                 let dual = env.get(v).unwrap();
                 term::var(*dual, typ.clone())
             }
+            RTerm::Cst(_) if t.typ().is_bool() => term::bool(!t.bool().unwrap()),
             RTerm::Cst(_) => term::app(Op::Not, vec![t.clone()]),
             RTerm::CArray { typ, term, .. } => {
                 let term = neg(term, env);
@@ -528,54 +582,46 @@ fn remove_not_bool_var<'a>(instance: &mut AbsInstance<'a>, varmap: &Vec<HashMap<
         }
     }
 
-    let clauses: Vec<_> = instance
-        .clauses
+    let lhs_term = go(&c.lhs_term, env);
+    let lhs_preds = c
+        .lhs_preds
         .iter()
-        .zip(varmap.iter())
-        .map(|(c, env)| {
-            let lhs_term = go(&c.lhs_term, env);
-            let lhs_preds = c
-                .lhs_preds
-                .iter()
-                .map(|lhs_pred| {
-                    let mut args = Vec::new();
-                    for term in lhs_pred.args.iter() {
-                        args.push(go(term, env));
-                        // all the term of bool is passed with its dual
-                        if term.typ().is_bool() {
-                            args.push(neg(term, env));
-                        }
-                    }
-                    let args: VarMap<_> = args.into();
-                    chc::PredApp {
-                        pred: lhs_pred.pred,
-                        args: args.into(),
-                    }
-                })
-                .collect();
-            let rhs = c.rhs.as_ref().map(|(p, old_args)| {
-                let mut args = Vec::new();
-                for arg in old_args.iter() {
-                    args.push(*arg);
-                    match env.get(arg) {
-                        Some(dual) => {
-                            args.push(*dual);
-                        }
-                        None => {}
-                    }
+        .map(|lhs_pred| {
+            let mut args = Vec::new();
+            for term in lhs_pred.args.iter() {
+                args.push(go(term, env));
+                // all the term of bool is passed with its dual
+                if term.typ().is_bool() {
+                    args.push(neg(term, env));
                 }
-
-                (*p, args)
-            });
-            AbsClause {
-                lhs_preds,
-                lhs_term,
-                rhs,
-                vars: c.vars.clone(),
+            }
+            let args: VarMap<_> = args.into();
+            chc::PredApp {
+                pred: lhs_pred.pred,
+                args: args.into(),
             }
         })
         .collect();
-    instance.clauses = clauses;
+    let rhs = c.rhs.as_ref().map(|(p, old_args)| {
+        let mut args = Vec::new();
+        for arg in old_args.iter() {
+            args.push(*arg);
+            match env.get(arg) {
+                Some(dual) => {
+                    args.push(*dual);
+                }
+                None => {}
+            }
+        }
+
+        (*p, args)
+    });
+    AbsClause {
+        lhs_preds,
+        lhs_term,
+        rhs,
+        vars: c.vars.clone(),
+    }
 }
 
 fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
@@ -583,12 +629,83 @@ fn remove_not_bool<'a>(instance: &mut AbsInstance<'a>) {
         log_info!("(not X) does not appear in the instance");
         return;
     }
-    let varmap = introduce_dual(instance);
-    remove_not_bool_var(instance, &varmap);
+    extend_bool_pred_signatures(instance);
+    let mut clauses = Vec::new();
+    for c in instance.clauses.iter() {
+        let paired = paired_bool_vars(c);
+        let locals = local_bool_vars(c, &paired);
+        let n_valuations = 1usize << locals.len();
+        for valuation in 0..n_valuations {
+            let mut c = instantiate_local_bools(c, &locals, valuation);
+            let env = introduce_duals_for_paired(&mut c, &paired);
+            clauses.push(remove_not_bool_clause(&c, &env));
+        }
+    }
+    instance.clauses = clauses;
 }
 
 #[test]
-fn test_remove_not_bool() {}
+fn test_remove_not_bool_paired_rhs_bool() {
+    let mut vars = VarInfos::new();
+    let b = vars.next_index();
+    vars.push(VarInfo::new("b", typ::bool(), b));
+
+    let mut clause = AbsClause {
+        vars,
+        rhs: Some((PrdIdx::from(0), vec![b])),
+        lhs_preds: vec![],
+        lhs_term: term::app(Op::Not, vec![term::bool_var(b)]),
+    };
+
+    let paired = paired_bool_vars(&clause);
+    let locals = local_bool_vars(&clause, &paired);
+    assert!(paired.contains(&b));
+    assert!(locals.is_empty());
+
+    let env = introduce_duals_for_paired(&mut clause, &paired);
+    let dual = *env.get(&b).unwrap();
+    let clause = remove_not_bool_clause(&clause, &env);
+
+    assert_eq!(clause.lhs_term.var_idx(), Some(dual));
+    assert_eq!(clause.rhs.unwrap().1, vec![b, dual]);
+}
+
+#[test]
+fn test_remove_not_bool_blasts_local_bool() {
+    let mut vars = VarInfos::new();
+    let b = vars.next_index();
+    vars.push(VarInfo::new("b", typ::bool(), b));
+
+    let clause = AbsClause {
+        vars,
+        rhs: None,
+        lhs_preds: vec![chc::PredApp {
+            pred: PrdIdx::from(0),
+            args: {
+                let args: VarMap<_> = vec![term::bool_var(b)].into();
+                args.into()
+            },
+        }],
+        lhs_term: term::bool(true),
+    };
+
+    let paired = paired_bool_vars(&clause);
+    let locals = local_bool_vars(&clause, &paired);
+    assert!(paired.is_empty());
+    assert_eq!(locals, vec![b]);
+
+    let false_branch = instantiate_local_bools(&clause, &locals, 0);
+    let false_branch = remove_not_bool_clause(&false_branch, &HashMap::new());
+    let false_args: Vec<_> = false_branch.lhs_preds[0].args.iter().cloned().collect();
+    assert_eq!(false_args[0].bool(), Some(false));
+    assert_eq!(false_args[1].bool(), Some(true));
+
+    let true_branch = instantiate_local_bools(&clause, &locals, 1);
+    let true_branch = remove_not_bool_clause(&true_branch, &HashMap::new());
+    let true_args: Vec<_> = true_branch.lhs_preds[0].args.iter().cloned().collect();
+    assert_eq!(true_args[0].bool(), Some(true));
+    assert_eq!(true_args[1].bool(), Some(false));
+}
 
 struct InlineTuple<'a, 'b> {
     instance: &'a mut AbsInstance<'b>,
