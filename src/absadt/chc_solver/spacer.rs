@@ -100,6 +100,9 @@ impl Spacer {
             Ok(true)
         } else if line.starts_with("unsat") {
             Ok(false)
+        } else if line.starts_with("unknown") {
+            // Spacer gave up; report it as "unknown" rather than as an error.
+            unknown!("Spacer returned unknown")
         } else {
             bail!("Unexpected output (spacer): {}", line)
         }
